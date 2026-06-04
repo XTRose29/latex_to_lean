@@ -1,0 +1,14 @@
+# Local web app and benchmark pipeline
+pyyaml>=6.0.0
+--pre
+agent-framework
+
+# FastAPI backend stack
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+sqlalchemy[asyncio]>=2.0.0
+aiosqlite>=0.20.0
+pydantic-settings>=2.0.0
+pydantic>=2.0.0
+aiofiles>=23.0.0

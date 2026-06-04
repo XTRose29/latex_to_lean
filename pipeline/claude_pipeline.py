@@ -1,0 +1,1164 @@
+#!/usr/bin/env python3
+"""
+Agent Framework pipeline: converts LaTeX textbook chapters into verified Lean 4 formalizations.
+
+Replaces the original bash-based pipeline with Python-native orchestration
+using ClaudeAgent from the Microsoft Agent Framework.
+"""
+
+import argparse
+import asyncio
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+from agent_framework.anthropic import ClaudeAgent
+from tools import loogle_search
+from llm_cache import (
+    call_payload,
+    cached_response_text,
+    find_valid_cache,
+    get_cache_dir,
+    make_input_hash,
+    restore_cached_outputs,
+    run_id_from_env,
+    write_artifact,
+    write_mock_artifact,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def discover_chapters(input_dir: str) -> list[int]:
+    files = glob.glob(os.path.join(input_dir, "ch*.txt"))
+    nums = []
+    for f in files:
+        m = re.search(r'ch(\d+)\.txt$', os.path.basename(f))
+        if m:
+            nums.append(int(m.group(1)))
+    return sorted(nums)
+
+
+def load_prompt(prompts_dir: str, name: str, **kwargs) -> str:
+    """Load a prompt template and fill placeholders."""
+    path = os.path.join(prompts_dir, name)
+    with open(path) as f:
+        template = f.read()
+    return template.format(**kwargs)
+
+
+def make_claude_options(claude_cfg: dict, project_root: str) -> dict:
+    """Build ClaudeAgent default_options from config.
+
+    Supports three providers:
+      - "subscription": Claude Pro/Max subscription (no keys, shorthand model names)
+      - "bedrock": AWS Bedrock (requires AWS credentials)
+      - "api_key": Anthropic API key (requires ANTHROPIC_API_KEY)
+    """
+    provider = claude_cfg.get("provider", "subscription")
+    env = {}
+
+    if provider == "subscription":
+        sub_cfg = claude_cfg.get("subscription", {})
+        model = sub_cfg.get("model", "opus")
+    elif provider == "api_key":
+        api_cfg = claude_cfg.get("api_key", {})
+        model = api_cfg.get("model", "claude-sonnet-4-6")
+        key = (
+            api_cfg.get("key", "")
+            or os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
+            or os.environ.get("ANTHROPIC_API_KEY", "")
+        )
+        if not key:
+            raise ValueError("config.yaml: claude.api_key.key is empty. Set your Anthropic API key.")
+        env["ANTHROPIC_AUTH_TOKEN"] = key
+        env["ANTHROPIC_API_KEY"] = key
+        env["ANTHROPIC_MODEL"] = model
+        env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
+        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = api_cfg.get("opus_model", "claude-opus-4-8")
+        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = api_cfg.get("haiku_model", "claude-haiku-4-5")
+        env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
+        env["DISABLE_TELEMETRY"] = "1"
+        base_url = api_cfg.get("base_url", "")
+        if base_url:
+            env["ANTHROPIC_BASE_URL"] = base_url
+    elif provider == "bedrock":
+        bedrock_cfg = claude_cfg.get("bedrock", {})
+        model = bedrock_cfg.get("model", "claude-opus-4-8")
+        env["CLAUDE_CODE_USE_BEDROCK"] = "1"
+        env["AWS_PROFILE"] = bedrock_cfg.get("aws_profile", "default")
+    else:
+        raise ValueError(f"config.yaml: unknown claude.provider '{provider}'. Use 'subscription', 'bedrock', or 'api_key'.")
+
+    options = {
+        "cli_path": claude_cfg.get("cli_path", "claude"),
+        "model": model,
+        "permission_mode": claude_cfg.get("permission_mode", "bypassPermissions"),
+        "cwd": project_root,
+        "env": env,
+        "max_buffer_size": 1000 * 1024 * 1024,  # 1000 MB — avoid SDK 1 MB default
+    }
+    if claude_cfg.get("effort"):
+        options["effort"] = claude_cfg["effort"]
+    return options
+
+
+def check_prerequisites(mode: str = "statement"):
+    """Check that required tools are available."""
+    missing = []
+    required = ["claude", "python3"]
+    if mode != "benchmark":
+        required.extend(["elan", "lake"])
+    for cmd in required:
+        if shutil.which(cmd) is None:
+            missing.append(cmd)
+    if missing:
+        print(f"ERROR: Missing required tools: {', '.join(missing)}")
+        print("Please install them before running the pipeline.")
+        sys.exit(1)
+    try:
+        import yaml as _y  # noqa: F401
+    except ImportError:
+        missing.append("pyyaml (pip install pyyaml)")
+    if missing:
+        print(f"ERROR: Missing Python packages: {', '.join(missing)}")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+class PipelineLogger:
+    """Persistent logging matching the bash pipeline's AUTO_RUN_STATUS.md,
+    AUTO_RUN_STATUS.md.history, and AUTO_RUN_LOG.txt.
+
+    Also writes job_status.json on every update — the structured sink used by
+    the web frontend (avoids regex-parsing the markdown file).
+    """
+
+    def __init__(self, log_dir: str, ch: int, phase: str):
+        os.makedirs(log_dir, exist_ok=True)
+        self.log_dir = log_dir
+        self.ch = ch
+        self.phase = phase
+        self.status_file = os.path.join(log_dir, "AUTO_RUN_STATUS.md")
+        self.history_file = os.path.join(log_dir, "AUTO_RUN_STATUS.md.history")
+        self.log_file = os.path.join(log_dir, "AUTO_RUN_LOG.txt")
+        self.json_status_file = os.path.join(log_dir, "job_status.json")
+        self.start_time = self._iso_now()
+        self.pid = os.getpid()
+        self._history_entries: list[dict] = []
+
+        self.append_history(f"Chapter {ch} {phase} started")
+
+    @staticmethod
+    def _iso_now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def update_status(self, iteration: int, max_iter: int, step: str, state: str, details: str):
+        now = self._iso_now()
+        history = ""
+        if os.path.exists(self.history_file):
+            with open(self.history_file) as f:
+                history = f.read()
+        with open(self.status_file, "w") as f:
+            f.write(f"# Chapter {self.ch} {self.phase} - Auto Status\n\n")
+            f.write("| Field | Value |\n|-------|-------|\n")
+            f.write(f"| **Status** | {state} |\n")
+            f.write(f"| **Current Iteration** | {iteration} / {max_iter} |\n")
+            f.write(f"| **Current Step** | {step} |\n")
+            f.write(f"| **Started At** | {self.start_time} |\n")
+            f.write(f"| **Last Updated** | {now} |\n")
+            f.write(f"| **PID** | {self.pid} |\n\n")
+            f.write(f"## Current Activity\n{details}\n\n")
+            f.write(f"## Progress History\n{history}\n")
+
+        self._write_json_status(
+            state=state,
+            stage_label=step,
+            stage_num=iteration,
+            stage_total=max_iter,
+            details=details,
+            updated_at=now,
+        )
+
+    def _write_json_status(
+        self,
+        state: str,
+        stage_label: str,
+        stage_num: int,
+        stage_total: int,
+        details: str,
+        updated_at: str,
+    ) -> None:
+        payload = {
+            "state": state,           # "RUNNING" | "PAUSED" | "DONE" | "ERROR"
+            "stage_label": stage_label,
+            "stage_num": stage_num,
+            "stage_total": stage_total,
+            "details": details,
+            "chapter": self.ch,
+            "phase": self.phase,
+            "pid": self.pid,
+            "started_at": self.start_time,
+            "updated_at": updated_at,
+            "history": self._history_entries,
+        }
+        tmp = self.json_status_file + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, self.json_status_file)
+
+    def append_history(self, msg: str):
+        now = datetime.now().strftime("%H:%M:%S")
+        self._history_entries.append({"time": now, "msg": msg})
+        with open(self.history_file, "a") as f:
+            f.write(f"- [{now}] {msg}\n")
+
+    def log(self, msg: str):
+        print(msg)
+        with open(self.log_file, "a") as f:
+            f.write(msg + "\n")
+
+    def finalize(self, iteration: int, max_iter: int, exit_state: str, details: str):
+        self.update_status(iteration, max_iter, exit_state, exit_state, details)
+        self.append_history(f"Process ended: {exit_state}")
+
+
+# ---------------------------------------------------------------------------
+# Token usage tracking
+# ---------------------------------------------------------------------------
+
+class TokenTracker:
+    """Accumulates token usage across all agent calls and persists to disk
+    after every update so the user can check TOKEN_USAGE.md at any time."""
+
+    def __init__(self, output_dir: str, model: str):
+        self.output_dir = output_dir
+        self.model = model
+        self.calls: list[dict] = []
+        self.total_input = 0
+        self.total_output = 0
+        self.total_elapsed = 0.0
+        self.md_path = os.path.join(output_dir, "TOKEN_USAGE.md")
+        self.json_path = os.path.join(output_dir, "token_usage.json")
+        self.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Resume from existing token usage if available
+        if os.path.exists(self.json_path):
+            try:
+                with open(self.json_path) as f:
+                    data = json.load(f)
+                self.calls = data.get("calls", [])
+                self.total_input = data.get("total_input_tokens", 0)
+                self.total_output = data.get("total_output_tokens", 0)
+                self.total_elapsed = data.get("total_elapsed_s", 0.0)
+                self.start_time = data.get("started", self.start_time)
+            except (json.JSONDecodeError, KeyError):
+                pass  # Start fresh if file is corrupted
+
+    def record(self, call_name: str, input_tokens: int, output_tokens: int, elapsed: float):
+        self.total_input += input_tokens
+        self.total_output += output_tokens
+        self.total_elapsed += elapsed
+        self.calls.append({
+            "call": len(self.calls) + 1,
+            "name": call_name,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "elapsed_s": round(elapsed, 1),
+            "cumul_input": self.total_input,
+            "cumul_output": self.total_output,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        self._save()
+
+    def _save(self):
+        """Write both TOKEN_USAGE.md and token_usage.json."""
+        # --- Markdown ---
+        lines = [
+            "# Token Usage\n",
+            f"**Model:** `{self.model}`  ",
+            f"**Started:** {self.start_time}  ",
+            f"**Last updated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n",
+            "## Summary\n",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| Total input tokens | {self.total_input:,} |",
+            f"| Total output tokens | {self.total_output:,} |",
+            f"| Total tokens | {self.total_input + self.total_output:,} |",
+            f"| Total elapsed | {self.total_elapsed:.0f}s |",
+            f"| Agent calls | {len(self.calls)} |\n",
+            "## Per-Call Breakdown\n",
+            "| # | Agent | Input | Output | Time | Cumul In | Cumul Out |",
+            "|---|-------|------:|-------:|-----:|---------:|----------:|",
+        ]
+        for c in self.calls:
+            lines.append(
+                f"| {c['call']} | {c['name']} "
+                f"| {c['input_tokens']:,} | {c['output_tokens']:,} "
+                f"| {c['elapsed_s']}s "
+                f"| {c['cumul_input']:,} | {c['cumul_output']:,} |"
+            )
+        lines.append("")
+
+        with open(self.md_path, "w") as f:
+            f.write("\n".join(lines))
+
+        # --- JSON ---
+        data = {
+            "model": self.model,
+            "started": self.start_time,
+            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_input_tokens": self.total_input,
+            "total_output_tokens": self.total_output,
+            "total_tokens": self.total_input + self.total_output,
+            "total_elapsed_s": round(self.total_elapsed, 1),
+            "calls": self.calls,
+        }
+        with open(self.json_path, "w") as f:
+            json.dump(data, f, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Agent runners
+# ---------------------------------------------------------------------------
+
+def _format_content_for_log(content) -> str | None:
+    """Format a Content object into a human-readable log line."""
+    ctype = getattr(content, "type", None)
+    if ctype is None:
+        return None
+
+    ctype_str = str(ctype)
+
+    # Tool calls (function_call, shell commands, MCP tools)
+    if "function_call" in ctype_str:
+        name = getattr(content, "name", "") or ""
+        args = getattr(content, "arguments", "") or ""
+        if isinstance(args, dict):
+            # For bash commands, show the command
+            cmd = args.get("command", "")
+            if cmd:
+                preview = cmd[:200] + ("..." if len(cmd) > 200 else "")
+                return f">>> Tool: {name} - {preview}"
+            args_preview = str(args)[:150]
+            return f">>> Tool: {name}({args_preview})"
+        return f">>> Tool: {name}"
+
+    if "shell_tool" in ctype_str or "shell_command" in ctype_str:
+        cmds = getattr(content, "commands", None) or []
+        cmd_str = "; ".join(cmds)[:200] if cmds else ""
+        return f">>> Shell: {cmd_str}" if cmd_str else None
+
+    if "function_result" in ctype_str:
+        name = getattr(content, "name", "") or ""
+        exc = getattr(content, "exception", None)
+        if exc:
+            return f"<<< Result ({name}): ERROR - {str(exc)[:100]}"
+        return None  # Don't log successful results (too verbose)
+
+    # Text content — skip streaming deltas, only log substantial text
+    if "text" in ctype_str:
+        text = getattr(content, "text", "") or ""
+        if len(text) > 20:
+            return text[:300] + ("..." if len(text) > 300 else "")
+        return None
+
+    return None
+
+
+async def run_agent(
+    claude_opts: dict,
+    prompt: str,
+    logger: PipelineLogger | None = None,
+    tools: list | None = None,
+    instructions: str | None = None,
+    tracker: TokenTracker | None = None,
+    call_name: str = "",
+    expected_outputs: list[str] | None = None,
+) -> str:
+    """Run a single ClaudeAgent call with streaming output logged in real time."""
+    start_time = datetime.now()
+    text_buffer = ""  # Accumulate text deltas, flush on newlines or tool calls
+    call_name = call_name or "agent"
+    run_id = run_id_from_env()
+    payload = call_payload(claude_opts, prompt, call_name, tools, instructions, expected_outputs)
+    digest = make_input_hash(payload)
+    cache_dir = get_cache_dir(run_id, call_name, digest)
+    dry_run = os.environ.get("LATEX_TO_LEAN_DRY_RUN", "").strip().lower() in {"1", "true", "yes"}
+
+    cached = find_valid_cache(call_name, digest, expected_outputs) if expected_outputs else None
+    if cached:
+        restore_cached_outputs(cached)
+        local_artifact = write_artifact(
+            cache_dir,
+            payload,
+            digest,
+            cached_response_text(cached),
+            cached.get("token_usage", {}),
+            expected_outputs,
+            api_called=False,
+            cache_hit=True,
+            source=f"cache:{cached.get('source', 'claude')}",
+        )
+        if logger:
+            logger.log(
+                f"[LLM cache hit] {call_name}: restored cached response "
+                f"from {cached.get('response_path')}; no Claude call made."
+            )
+        if tracker:
+            tracker.record(call_name + " [cache]", 0, 0, 0.0)
+        return Path(local_artifact["response_path"]).read_text(encoding="utf-8")
+
+    if dry_run:
+        artifact = write_mock_artifact(cache_dir, payload, digest, expected_outputs)
+        if logger:
+            logger.log(f"[LLM dry-run] {call_name}: wrote mock artifact; no Claude call made.")
+        if tracker:
+            tracker.record(call_name + " [mock]", 0, 0, 0.0)
+        return Path(artifact["response_path"]).read_text(encoding="utf-8")
+
+    if logger:
+        logger.log(f"[Claude call] {call_name}: no valid cache artifact found.")
+
+    def flush_text():
+        nonlocal text_buffer
+        if logger and text_buffer.strip():
+            logger.log(text_buffer.rstrip())
+        text_buffer = ""
+
+    agent_kwargs = {}
+    if tools:
+        agent_kwargs["tools"] = tools
+    if instructions:
+        agent_kwargs["instructions"] = instructions
+
+    # Import ResultMessage to capture usage from the CLI's result event
+    from agent_framework_claude._agent import ResultMessage
+
+    result_msg = None  # Will capture the ResultMessage during streaming
+
+    async with ClaudeAgent(default_options=claude_opts, **agent_kwargs) as agent:
+        # Intercept at the client level to capture ResultMessage
+        if hasattr(agent, "_client") and agent._client:
+            original_receive = agent._client.receive_response
+
+            async def _patched_receive():
+                nonlocal result_msg
+                async for message in original_receive():
+                    if isinstance(message, ResultMessage):
+                        result_msg = message
+                    yield message
+
+            agent._client.receive_response = _patched_receive
+
+        stream = agent.run(prompt, stream=True)
+        async for update in stream:
+            if logger and hasattr(update, "contents") and update.contents:
+                for content in update.contents:
+                    ctype_str = str(getattr(content, "type", ""))
+                    if "text" in ctype_str:
+                        delta = getattr(content, "text", "") or ""
+                        text_buffer += delta
+                        while "\n" in text_buffer:
+                            line, text_buffer = text_buffer.split("\n", 1)
+                            if line.strip():
+                                logger.log(line)
+                    else:
+                        flush_text()
+                        line = _format_content_for_log(content)
+                        if line:
+                            logger.log(line)
+
+        flush_text()
+        final = await stream.get_final_response()
+        elapsed = (datetime.now() - start_time).total_seconds()
+        final_text = final.text or ""
+
+        # Extract token counts — try usage_details first, then captured ResultMessage
+        input_tokens = 0
+        output_tokens = 0
+        usage = getattr(final, "usage_details", None)
+        if usage:
+            input_tokens = (usage.get("input_token_count", 0) if isinstance(usage, dict)
+                            else getattr(usage, "input_token_count", 0)) or 0
+            output_tokens = (usage.get("output_token_count", 0) if isinstance(usage, dict)
+                             else getattr(usage, "output_token_count", 0)) or 0
+
+        # Fallback: use captured ResultMessage from CLI
+        if not (input_tokens or output_tokens) and result_msg and result_msg.usage:
+            ru = result_msg.usage
+            # input_tokens only counts non-cached input; add cache tokens for the real total
+            input_tokens = (
+                (ru.get("input_tokens", 0) or 0)
+                + (ru.get("cache_creation_input_tokens", 0) or 0)
+                + (ru.get("cache_read_input_tokens", 0) or 0)
+            )
+            output_tokens = ru.get("output_tokens", 0) or 0
+
+        token_usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+        write_artifact(
+            cache_dir,
+            payload,
+            digest,
+            final_text,
+            token_usage,
+            expected_outputs,
+            api_called=True,
+            cache_hit=False,
+            source="claude",
+        )
+
+        if tracker:
+            tracker.record(call_name, input_tokens, output_tokens, elapsed)
+
+        return final_text
+
+
+async def run_agent_for_verdict(claude_opts: dict, prompt: str, logger: PipelineLogger | None = None, tools: list | None = None, tracker: TokenTracker | None = None, call_name: str = "") -> str:
+    """Run agent and extract DONE/CONTINUE verdict from response."""
+    text = await run_agent(claude_opts, prompt, logger, tools=tools, tracker=tracker, call_name=call_name)
+    # Extract the last meaningful word — scan from bottom up
+    for line in reversed(text.strip().splitlines()):
+        stripped = line.strip().upper()
+        if stripped == "DONE":
+            return "DONE"
+        if stripped == "CONTINUE":
+            return "CONTINUE"
+    # Fallback: substring match (less strict, like the bash version)
+    # Check CONTINUE first — if both appear, prefer the conservative choice
+    for line in reversed(text.strip().splitlines()):
+        stripped = line.strip().upper()
+        if "CONTINUE" in stripped:
+            return "CONTINUE"
+        if "DONE" in stripped:
+            return "DONE"
+    return "CONTINUE"
+
+
+# ---------------------------------------------------------------------------
+# Statement formalization loop
+# ---------------------------------------------------------------------------
+
+async def run_statement_loop(
+    ch: int,
+    project_root: str,
+    claude_opts: dict,
+    prompts_dir: str,
+    evaluation_dir: str,
+    max_iterations: int,
+    tracker: TokenTracker | None = None,
+) -> bool:
+    """Run the statement formalization/verification loop for one chapter.
+    Returns True if successful (DONE), False if max iterations reached.
+    """
+    raw_data_dir = os.path.join(project_root, "natural_language", "raw_data")
+    theorems_dir = os.path.join(raw_data_dir, "theorems_and_defs")
+    lean_file = os.path.join(project_root, "Formalization", f"ch{ch}.lean")
+    lean_src_dir = os.path.join(project_root, "Formalization")
+    verify_dir = os.path.join(project_root, "experiments", "auto", f"ch{ch}", "verification_fl_statement")
+    legacy_prompts_dir = os.path.join(prompts_dir, "legacy")
+
+    logger = PipelineLogger(verify_dir, ch, "Statement Formalization")
+
+    # Check if this phase already completed successfully in a previous run
+    status_path = os.path.join(verify_dir, "AUTO_RUN_STATUS.md")
+    if os.path.exists(status_path):
+        with open(status_path) as f:
+            status_content = f.read()
+        if "FINISHED" in status_content:
+            logger.log("Statement formalization already FINISHED in a previous run. Skipping.")
+            return True
+
+    # Build reuse instructions
+    prior_files = glob.glob(os.path.join(lean_src_dir, "ch*.lean"))
+    prior_chapters = sorted([
+        int(re.search(r'ch(\d+)\.lean', os.path.basename(f)).group(1))
+        for f in prior_files
+        if re.search(r'ch(\d+)\.lean', os.path.basename(f))
+        and int(re.search(r'ch(\d+)\.lean', os.path.basename(f)).group(1)) < ch
+    ])
+    if prior_chapters:
+        deps = ", ".join(f"{lean_src_dir}/ch{c}.lean" for c in prior_chapters)
+        reuse_instructions = f"You should reuse definitions from {deps} whenever possible!!!"
+    else:
+        reuse_instructions = "This is the first chapter. No prior chapter definitions to reuse."
+
+    # Resume: find the first incomplete round (no verification result file)
+    start_round = 1
+    for r in range(1, max_iterations + 1):
+        result = os.path.join(verify_dir, f"round_{r}", "fl_statements_verification_result.md")
+        if os.path.exists(result) and os.path.getsize(result) > 0:
+            start_round = r + 1
+        else:
+            break
+    if start_round > max_iterations:
+        logger.log("All statement rounds already completed (max iterations reached).")
+        logger.finalize(max_iterations, max_iterations, "STOPPED", "Max iterations already reached in previous run.")
+        return False
+    if start_round > 1:
+        logger.log(f"Resuming from round {start_round} (rounds 1-{start_round - 1} already have verification results)")
+
+    for i in range(start_round, max_iterations + 1):
+        round_dir = os.path.join(verify_dir, f"round_{i}")
+        os.makedirs(round_dir, exist_ok=True)
+        status_file = os.path.join(round_dir, "fl_statements_status.md")
+        verify_result_file = os.path.join(round_dir, "fl_statements_verification_result.md")
+
+        prev_verify = os.path.join(verify_dir, f"round_{i-1}", "fl_statements_verification_result.md")
+
+        logger.log(f"\n========================================")
+        logger.log(f"=== ITERATION {i} of {max_iterations} ===")
+        logger.log(f"========================================")
+        logger.append_history(f"Iteration {i} started (round dir: round_{i})")
+
+        # Step 1: Statement formalization
+        logger.update_status(i, max_iterations, "1/3 Statement Formalization", "RUNNING", "Running Claude statement formalization task...")
+        logger.append_history(f"Iteration {i}: Statement formalization started")
+
+        fl_prompt = load_prompt(
+            legacy_prompts_dir, "statement_fl.md",
+            ch_num=ch, raw_data_dir=raw_data_dir, theorems_and_defs_dir=theorems_dir,
+            lean_chapter_file=lean_file, lean_src_dir=lean_src_dir,
+            project_root=project_root, evaluation_dir=evaluation_dir,
+            reuse_instructions=reuse_instructions, status_file=status_file,
+        )
+        if os.path.exists(prev_verify):
+            fl_prompt += f"\n\nAlso read the PREVIOUS round's verification result from {prev_verify}, and focus on fixing any major discrepancies or coverage issues reported there."
+        fl_prompt += f"\n\nThis is round {i}. Save your verification efforts and status log to {status_file}. IMPORTANT: Do NOT modify any file outside of this chapter. Ignore any errors or warnings that are not about this chapter."
+
+        await run_agent(claude_opts, fl_prompt, logger, tools=[loogle_search],
+                        tracker=tracker, call_name=f"ch{ch} Stmt FL R{i}")
+        logger.append_history(f"Iteration {i}: Statement formalization completed")
+
+        # Step 2: Statement verification
+        logger.update_status(i, max_iterations, "2/3 Statement Verification", "RUNNING", "Running Claude statement verification task...")
+        logger.append_history(f"Iteration {i}: Statement verification started")
+
+        verify_prompt = load_prompt(
+            legacy_prompts_dir, "statement_verify.md",
+            ch_num=ch, lean_chapter_file=lean_file,
+            theorems_and_defs_dir=theorems_dir,
+            project_root=project_root, evaluation_dir=evaluation_dir,
+            output_file=verify_result_file,
+        )
+        verify_prompt += f"\n\nThis is round {i}. Write results to {verify_result_file}. IMPORTANT: Do NOT modify any file outside of this chapter. Ignore any errors or warnings that are not about this chapter."
+
+        await run_agent(claude_opts, verify_prompt, logger, tools=[loogle_search],
+                        tracker=tracker, call_name=f"ch{ch} Stmt Verify R{i}")
+        logger.append_history(f"Iteration {i}: Statement verification completed")
+
+        # Step 3: Verdict
+        logger.update_status(i, max_iterations, "3/3 Checking Verdict", "RUNNING", "Claude is analyzing verification results...")
+        logger.append_history(f"Iteration {i}: Checking verdict")
+
+        verdict_prompt = load_prompt(
+            legacy_prompts_dir, "verdict_statement.md",
+            ch_num=ch, verification_result_file=verify_result_file,
+        )
+        decision = await run_agent_for_verdict(claude_opts, verdict_prompt, logger,
+                                               tracker=tracker, call_name=f"ch{ch} Stmt Verdict R{i}")
+        logger.log(f"Iteration {i}: Decision is {decision}")
+        logger.append_history(f"Iteration {i}: Decision = {decision}")
+
+        if decision == "DONE":
+            logger.finalize(i, max_iterations, "FINISHED", "All verifications passed successfully!")
+            logger.append_history("SUCCESS - All verifications passed")
+            return True
+
+        await asyncio.sleep(2)  # Brief pause between iterations
+
+    logger.finalize(max_iterations, max_iterations, "STOPPED", "Max iterations reached.")
+    logger.append_history("STOPPED - Max iterations reached")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Proof search loop
+# ---------------------------------------------------------------------------
+
+async def run_proof_loop(
+    ch: int,
+    project_root: str,
+    claude_opts: dict,
+    prompts_dir: str,
+    evaluation_dir: str,
+    max_iterations: int,
+    check_interval: int,
+    proving_skill: str = "",
+    tracker: TokenTracker | None = None,
+) -> bool:
+    """Run the proof search/verification loop for one chapter.
+    Returns True if successful (DONE), False if max iterations reached.
+    """
+    lean_file = os.path.join(project_root, "Formalization", f"ch{ch}.lean")
+    intermediate_dir = os.path.join(project_root, "Formalization", "intermediate_files", f"ch{ch}")
+    verify_dir = os.path.join(project_root, "experiments", "auto", f"ch{ch}", "verification")
+    proof_info_file = os.path.join(project_root, "Formalization", "utils", f"ch{ch}_info.txt")
+    legacy_prompts_dir = os.path.join(prompts_dir, "legacy")
+
+    logger = PipelineLogger(verify_dir, ch, "Proof Search")
+
+    # Check if this phase already completed successfully in a previous run
+    status_path = os.path.join(verify_dir, "AUTO_RUN_STATUS.md")
+    if os.path.exists(status_path):
+        with open(status_path) as f:
+            status_content = f.read()
+        if "FINISHED" in status_content:
+            logger.log("Proof search already FINISHED in a previous run. Skipping.")
+            return True
+
+    # Resume: find the first incomplete round (no verification result file)
+    start_round = 1
+    for r in range(1, max_iterations + 1):
+        result = os.path.join(verify_dir, f"round_{r}", "fl_proof_verification_result.md")
+        if os.path.exists(result) and os.path.getsize(result) > 0:
+            start_round = r + 1
+        else:
+            break
+    if start_round > max_iterations:
+        logger.log("All proof rounds already completed (max iterations reached).")
+        logger.finalize(max_iterations, max_iterations, "STOPPED", "Max iterations already reached in previous run.")
+        return False
+    if start_round > 1:
+        logger.log(f"Resuming from round {start_round} (rounds 1-{start_round - 1} already have verification results)")
+
+    for i in range(start_round, max_iterations + 1):
+        round_dir = os.path.join(verify_dir, f"round_{i}")
+        os.makedirs(round_dir, exist_ok=True)
+        proof_status_file = os.path.join(round_dir, "fl_proof_status.md")
+        verify_result_file = os.path.join(round_dir, "fl_proof_verification_result.md")
+        unfaithful_args_file = os.path.join(round_dir, "fl_statements_unfaithful_arguments.md")
+        change_history_file = os.path.join(round_dir, "fl_statements_change_history.md")
+
+        prev_verify = os.path.join(verify_dir, f"round_{i-1}", "fl_proof_verification_result.md")
+        prev_proof_status = os.path.join(verify_dir, f"round_{i-1}", "fl_proof_status.md")
+
+        logger.log(f"\n========================================")
+        logger.log(f"=== ITERATION {i} of {max_iterations} ===")
+        logger.log(f"========================================")
+        logger.append_history(f"Iteration {i} started (round dir: round_{i})")
+
+        # Build previous-round instructions
+        prev_instructions = ""
+        if os.path.exists(prev_verify):
+            prev_instructions += f"- Read the PREVIOUS round's verification result from {prev_verify}.\n"
+        if os.path.exists(prev_proof_status):
+            prev_instructions += f"- Read the PREVIOUS round's proof status from {prev_proof_status}. It contains which approaches were tried and FAILED — do NOT repeat these.\n"
+        if not prev_instructions:
+            prev_instructions = "- This is the first round. No previous round data available.\n"
+
+        # Step 1: Proof search
+        logger.update_status(i, max_iterations, "1/3 Proof Search", "RUNNING", "Running Claude proof search task...")
+        logger.append_history(f"Iteration {i}: Proof search started")
+
+        search_prompt = load_prompt(
+            legacy_prompts_dir, "proof_search.md",
+            ch_num=ch, lean_chapter_file=lean_file,
+            project_root=project_root, evaluation_dir=evaluation_dir,
+            intermediate_dir=intermediate_dir,
+            proof_info_file=proof_info_file,
+            round_num=i, proof_status_file=proof_status_file,
+            unfaithful_args_file=unfaithful_args_file,
+            previous_round_instructions=prev_instructions,
+        )
+        search_prompt += f"\n\nThis is round {i}. Start proving theorems. If one approach doesn't work after much effort, try a completely different proof strategy. No sorry allowed in proofs! IMPORTANT: Do NOT modify any file outside of this chapter. Ignore any errors or warnings that are not about this chapter."
+
+        await run_agent(claude_opts, search_prompt, logger, tools=[loogle_search], instructions=proving_skill or None,
+                        tracker=tracker, call_name=f"ch{ch} Proof Search R{i}")
+        logger.append_history(f"Iteration {i}: Proof search completed")
+
+        # Step 2: Proof verification
+        logger.update_status(i, max_iterations, "2/3 Verification", "RUNNING", "Running Claude verification task...")
+        logger.append_history(f"Iteration {i}: Verification started")
+
+        verify_prompt = load_prompt(
+            legacy_prompts_dir, "proof_verify.md",
+            ch_num=ch, lean_chapter_file=lean_file,
+            project_root=project_root, evaluation_dir=evaluation_dir,
+            intermediate_dir=intermediate_dir,
+            output_file=verify_result_file,
+        )
+        verify_prompt += f"\n\nThis is round {i}. Write results to {verify_result_file}. IMPORTANT: Do NOT modify any file outside of this chapter. Ignore any errors or warnings that are not about this chapter."
+
+        await run_agent(claude_opts, verify_prompt, logger, tools=[loogle_search],
+                        tracker=tracker, call_name=f"ch{ch} Proof Verify R{i}")
+        logger.append_history(f"Iteration {i}: Verification completed")
+
+        # Step 3: Verdict
+        logger.update_status(i, max_iterations, "3/3 Checking Verdict", "RUNNING", "Claude is analyzing verification results...")
+        logger.append_history(f"Iteration {i}: Checking verdict")
+
+        verdict_prompt = load_prompt(
+            legacy_prompts_dir, "verdict_proof.md",
+            ch_num=ch, verification_result_file=verify_result_file,
+        )
+        decision = await run_agent_for_verdict(claude_opts, verdict_prompt, logger,
+                                               tracker=tracker, call_name=f"ch{ch} Proof Verdict R{i}")
+        logger.log(f"Iteration {i}: Decision is {decision}")
+        logger.append_history(f"Iteration {i}: Decision = {decision}")
+
+        # Step 4: Check statement change (periodic) — runs regardless of verdict
+        # so unfaithful arguments are always reviewed, even if proofs all pass
+        statement_changed = False
+        if i % check_interval == 0:
+            if os.path.exists(unfaithful_args_file):
+                logger.update_status(i, max_iterations, "4/4 Check Statement Change", "RUNNING", "Running Claude statement change verification...")
+                logger.append_history(f"Iteration {i}: Check statement change started")
+
+                change_prompt = load_prompt(
+                    legacy_prompts_dir, "check_statement_change.md",
+                    ch_num=ch, lean_chapter_file=lean_file,
+                    intermediate_dir=intermediate_dir,
+                    unfaithful_args_file=unfaithful_args_file,
+                    change_history_file=change_history_file,
+                )
+                await run_agent(claude_opts, change_prompt, logger, tools=[loogle_search],
+                                tracker=tracker, call_name=f"ch{ch} Stmt Change Check R{i}")
+                logger.append_history(f"Iteration {i}: Check statement change completed")
+                statement_changed = True
+
+        if decision == "DONE":
+            if statement_changed:
+                logger.log(f"Iteration {i}: Verdict was DONE but statement changes were reviewed; continuing to re-verify.")
+                logger.append_history(f"Iteration {i}: Re-verifying after statement change review")
+            else:
+                logger.finalize(i, max_iterations, "FINISHED", "All verifications passed successfully!")
+                logger.append_history("SUCCESS - All verifications passed")
+                return True
+
+        await asyncio.sleep(2)  # Brief pause between iterations
+
+    logger.finalize(max_iterations, max_iterations, "STOPPED", "Max iterations reached.")
+    logger.append_history("STOPPED - Max iterations reached")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Full chapter pipeline
+# ---------------------------------------------------------------------------
+
+async def run_chapter(
+    ch: int,
+    project_root: str,
+    claude_opts: dict,
+    prompts_dir: str,
+    evaluation_dir: str,
+    pipeline_cfg: dict,
+    proving_skill: str = "",
+    tracker: TokenTracker | None = None,
+) -> bool:
+    """Run the full pipeline for one chapter: statements → snapshot → proofs."""
+    max_stmt = pipeline_cfg.get("max_statement_iterations", 9)
+    max_proof = pipeline_cfg.get("max_proof_iterations", 9)
+    check_interval = pipeline_cfg.get("statement_check_interval", 1)
+
+    # Phase 1: Statement formalization
+    print(f"\n--- Chapter {ch}: Statement Formalization ---")
+    stmt_ok = await run_statement_loop(
+        ch, project_root, claude_opts, prompts_dir, evaluation_dir, max_stmt,
+        tracker=tracker,
+    )
+
+    # Phase 2: Snapshot specs (only if no snapshot exists yet — don't overwrite
+    # on resume, since the proof agent may have partially modified the .lean file)
+    lean_file = os.path.join(project_root, "Formalization", f"ch{ch}.lean")
+    specs_dir = os.path.join(project_root, "Formalization", "intermediate_files", f"ch{ch}")
+    os.makedirs(specs_dir, exist_ok=True)
+    specs_file = os.path.join(specs_dir, f"ch{ch}_specs.lean")
+    if os.path.exists(lean_file) and not os.path.exists(specs_file):
+        shutil.copy2(lean_file, specs_file)
+        print(f"  [ch{ch}] Specs snapshot saved")
+    elif os.path.exists(specs_file):
+        print(f"  [ch{ch}] Specs snapshot already exists, keeping it")
+
+    # Phase 3: Proof search
+    print(f"\n--- Chapter {ch}: Proof Search ---")
+    proof_ok = await run_proof_loop(
+        ch, project_root, claude_opts, prompts_dir, evaluation_dir,
+        max_proof, check_interval, proving_skill=proving_skill,
+        tracker=tracker,
+    )
+
+    return stmt_ok and proof_ok
+
+
+# ---------------------------------------------------------------------------
+# Benchmark mode entry point
+# ---------------------------------------------------------------------------
+
+async def _run_benchmark_mode(args) -> None:
+    """Run the outline/benchmark specification pipeline for a single theorem."""
+    from benchmark_pipeline.outline_pipeline import run_outline_pipeline
+
+    if args.chapter is None:
+        print("ERROR: --chapter is required in benchmark mode (e.g. --chapter 7)")
+        sys.exit(1)
+
+    with open(args.config) as f:
+        config = yaml.safe_load(f)
+
+    pipeline_cfg = config.get("pipeline", {})
+    claude_cfg = config.get("claude", {})
+
+    # In benchmark mode, --output is the output base directory;
+    # the Lean project root is derived from it (same as statement mode).
+    output_base = os.path.abspath(args.output)
+    project_root = output_base  # Lean project is the output root
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_base = os.path.dirname(script_dir)
+    prompts_dir = os.path.join(project_base, "prompts")
+    evaluation_dir = script_dir
+
+    # Scaffold if project root doesn't exist yet
+    chapters = discover_chapters(args.input)
+    if chapters:
+        from scaffold import scaffold
+        scaffold(args.input, project_root, chapters)
+
+        # Stage 1: Extract theorem blocks (needed for packet extraction)
+        theorems_dir = os.path.join(project_root, "natural_language", "raw_data", "theorems_and_defs")
+        extract_script = os.path.join(evaluation_dir, "keep_only_theorems_and_defs.py")
+        ch = args.chapter
+        src = os.path.join(args.input, f"ch{ch}.txt")
+        dst = os.path.join(theorems_dir, f"ch{ch}.txt")
+        if os.path.exists(src) and not os.path.exists(dst):
+            subprocess.run([sys.executable, extract_script, src, dst], check=False)
+
+        # Copy raw chapter to utils
+        utils_dir = os.path.join(project_root, "Formalization", "utils")
+        os.makedirs(utils_dir, exist_ok=True)
+        utils_dst = os.path.join(utils_dir, f"ch{ch}_info.txt")
+        if os.path.exists(src) and not os.path.exists(utils_dst):
+            shutil.copy2(src, utils_dst)
+
+    claude_opts = make_claude_options(claude_cfg, project_root)
+    tracker = TokenTracker(output_base, claude_opts["model"])
+
+    print(f"\n=== BENCHMARK MODE ===")
+    print(f"Input dir:   {args.input}")
+    print(f"Output base: {output_base}")
+    print(f"Chapter:     {args.chapter}")
+    print(f"Theorem:     {args.theorem or '(first theorem in chapter)'}")
+    print(f"Token log:   {tracker.md_path}")
+
+    ok = await run_outline_pipeline(
+        ch=args.chapter,
+        theorem_label=args.theorem,
+        project_root=project_root,
+        output_dir=output_base,
+        claude_opts=claude_opts,
+        prompts_dir=prompts_dir,
+        evaluation_dir=evaluation_dir,
+        config=config,
+        tracker=tracker,
+        load_prompt=load_prompt,
+        run_agent=run_agent,
+        run_agent_for_verdict=run_agent_for_verdict,
+        loogle_search=loogle_search,
+        pipeline_logger_cls=PipelineLogger,
+        allow_ui_pause=args.ui_pause_for_profile,
+    )
+
+    print("\n" + "=" * 60)
+    print(f"BENCHMARK PIPELINE {'COMPLETE' if ok else 'INCOMPLETE'}")
+    print("=" * 60)
+    print(f"Output:      {output_base}/benchmarks/")
+    print(f"Token log:   {tracker.md_path}")
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+async def main():
+    parser = argparse.ArgumentParser(description="Agent Framework textbook-to-Lean pipeline")
+    parser.add_argument("--input", required=True, help="Directory containing ch*.txt LaTeX chapter files")
+    parser.add_argument("--output", required=True, help="Lean project root (statement mode) or output base directory (benchmark mode)")
+    parser.add_argument("--config", required=True, help="Path to config.yaml")
+    parser.add_argument("--skip-chapters", default="", help="Comma-separated chapter numbers to skip in Stage 3 (e.g. '1,2')")
+    parser.add_argument(
+        "--mode",
+        default="statement",
+        choices=["statement", "benchmark"],
+        help="Pipeline mode: 'statement' = full formalization pipeline (default); "
+             "'benchmark' = outline/benchmark specification builder for one theorem",
+    )
+    parser.add_argument(
+        "--chapter",
+        type=int,
+        default=None,
+        help="[benchmark mode] Chapter number containing the target theorem (e.g. 7)",
+    )
+    parser.add_argument(
+        "--theorem",
+        default="",
+        help="[benchmark mode] LaTeX label or name of the target theorem "
+             "(e.g. 'theorem:change_of_variables'). Leave empty to target the first theorem.",
+    )
+    parser.add_argument(
+        "--ui-pause-for-profile",
+        action="store_true",
+        help="[benchmark mode] If profile selection cannot happen in a terminal, "
+             "pause cleanly after Stage 3 so a UI can create assumption_profile.json.",
+    )
+    args = parser.parse_args()
+
+    skip_chapters = set()
+    if args.skip_chapters:
+        skip_chapters = {int(x.strip()) for x in args.skip_chapters.split(",") if x.strip()}
+
+    # Prerequisites check
+    check_prerequisites(args.mode)
+
+    # -------------------------------------------------------
+    # BENCHMARK MODE: outline / benchmark specification builder
+    # -------------------------------------------------------
+    if args.mode == "benchmark":
+        await _run_benchmark_mode(args)
+        return
+
+    with open(args.config) as f:
+        config = yaml.safe_load(f)
+
+    pipeline_cfg = config.get("pipeline", {})
+    claude_cfg = config.get("claude", {})
+    project_root = os.path.abspath(args.output)
+
+    # Resolve paths relative to project root (one level up from pipeline/)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_base = os.path.dirname(script_dir)  # formalization_upgrade/
+    prompts_dir = os.path.join(project_base, "prompts")
+    evaluation_dir = script_dir
+    skill_dir = os.path.join(project_base, "skill")
+
+    # Load proof search skill (used as system prompt for proof search agent)
+    proving_skill_path = os.path.join(skill_dir, "proving_skill.md")
+    math_skill_path = os.path.join(skill_dir, "super_math_skill.md")
+    lean_advice_path = os.path.join(skill_dir, "lean_proving_advice.md")
+    proving_skill = ""
+    if os.path.exists(proving_skill_path):
+        with open(proving_skill_path) as f:
+            proving_skill = f.read()
+        # Fill in the reference file paths
+        proving_skill = proving_skill.replace("{math_skill_file}", math_skill_path)
+        proving_skill = proving_skill.replace("{lean_advice_file}", lean_advice_path)
+
+    chapters = discover_chapters(args.input)
+    if not chapters:
+        print(f"ERROR: No ch*.txt files found in {args.input}")
+        sys.exit(1)
+
+    print(f"=== Discovered {len(chapters)} chapters: {chapters} ===")
+    print(f"=== Project root: {project_root} ===")
+
+    # Build ClaudeAgent options
+    claude_opts = make_claude_options(claude_cfg, project_root)
+
+    # Token usage tracker — writes TOKEN_USAGE.md after every agent call
+    tracker = TokenTracker(project_root, claude_opts["model"])
+    print(f"=== Token log: {tracker.md_path} ===")
+
+    # -------------------------------------------------------
+    # Stage 0: Scaffold
+    # -------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("STAGE 0: Scaffolding Lean project")
+    print("=" * 60)
+    from scaffold import scaffold
+    scaffold(args.input, project_root, chapters)
+
+    # Fetch Mathlib cache
+    print("  Fetching Mathlib cache...")
+    subprocess.run(["lake", "exe", "cache", "get"], cwd=project_root, check=True)
+
+    # -------------------------------------------------------
+    # Stage 1: Extract theorem blocks
+    # -------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("STAGE 1: Extracting theorem and definition blocks")
+    print("=" * 60)
+    theorems_dir = os.path.join(project_root, "natural_language", "raw_data", "theorems_and_defs")
+    extract_script = os.path.join(evaluation_dir, "keep_only_theorems_and_defs.py")
+    for ch in chapters:
+        src = os.path.join(args.input, f"ch{ch}.txt")
+        dst = os.path.join(theorems_dir, f"ch{ch}.txt")
+        print(f"  ch{ch}: extracting theorem/definition blocks...")
+        subprocess.run([sys.executable, extract_script, src, dst], check=True)
+
+    # -------------------------------------------------------
+    # Stage 2: Copy raw chapter files to utils for proof reference
+    # -------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("STAGE 2: Copying raw chapter text to utils for proof reference")
+    print("=" * 60)
+    utils_dir = os.path.join(project_root, "Formalization", "utils")
+    os.makedirs(utils_dir, exist_ok=True)
+    for ch in chapters:
+        src = os.path.join(args.input, f"ch{ch}.txt")
+        dst = os.path.join(utils_dir, f"ch{ch}_info.txt")
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+            print(f"  ch{ch}: copied -> {dst}")
+        else:
+            print(f"  ch{ch}: WARNING: {src} not found, skipping")
+
+    # -------------------------------------------------------
+    # Stage 3: Formalization (sequential by chapter)
+    # -------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("STAGE 3: Formalization (sequential by chapter)")
+    print("=" * 60)
+    formalize_chapters = [ch for ch in chapters if ch not in skip_chapters]
+    if skip_chapters:
+        print(f"  Skipping chapters: {sorted(skip_chapters)}")
+        print(f"  Processing chapters: {formalize_chapters}")
+
+    failed_chapters = []
+    for ch in formalize_chapters:
+        print(f"\n{'=' * 60}")
+        print(f"Chapter {ch}: statements → proofs")
+        print(f"{'=' * 60}")
+        try:
+            ok = await run_chapter(ch, project_root, claude_opts, prompts_dir, evaluation_dir, pipeline_cfg, proving_skill=proving_skill, tracker=tracker)
+            if ok:
+                print(f"  Chapter {ch}: DONE")
+            else:
+                print(f"  Chapter {ch}: INCOMPLETE (max iterations reached)")
+                failed_chapters.append(ch)
+        except Exception as e:
+            print(f"  Chapter {ch}: FAILED: {e}")
+            failed_chapters.append(ch)
+
+    if failed_chapters:
+        print(f"\nWARNING: Chapters {failed_chapters} had issues")
+
+    # -------------------------------------------------------
+    # Stage 4: Final validation
+    # -------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("STAGE 4: Final validation")
+    print("=" * 60)
+    from validate import validate
+    validate(project_root, chapters, evaluation_dir)
+
+    print("\n" + "=" * 60)
+    print("PIPELINE COMPLETE")
+    print("=" * 60)
+    print(f"Project at:    {project_root}")
+    print(f"Token usage:   {tracker.md_path}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

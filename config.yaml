@@ -1,0 +1,30 @@
+pipeline:
+  max_statement_iterations: 5
+  max_proof_iterations: 5
+  statement_check_interval: 1
+  max_outline_iterations: 1
+  max_spec_validation_iterations: 3
+  default_open_nodes: 5
+  descendant_shell_count: 5
+  efficient_llm: true
+
+claude:
+  cli_path: "claude"
+  permission_mode: "bypassPermissions"
+
+  # Choose ONE provider: "subscription", "bedrock", or "api_key"
+  provider: "api_key"
+
+  subscription:
+    model: "opus"
+
+  bedrock:
+    model: "claude-opus-4-8"
+    aws_profile: "default"
+
+  api_key:
+    model: "claude-sonnet-4-6"
+    opus_model: "claude-opus-4-8"
+    haiku_model: "claude-haiku-4-5"
+    key: ""
+    base_url: "https://api.ai.it.cornell.edu/"
