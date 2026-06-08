@@ -1,7 +1,7 @@
 # LaTeX to Lean Benchmark Builder
 
 Local web app for creating Lean benchmark questions from LaTeX theorem/proof
-input. The app starts from LaTeX directly; there is no PDF conversion path.
+input. 
 
 ## Quick Start
 
