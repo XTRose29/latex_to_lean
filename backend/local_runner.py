@@ -176,15 +176,16 @@ async def _run_pipeline_job_impl(job_id: str) -> dict:
 
 
 def _write_runtime_config(job_id: str) -> Path:
-    provider = settings.active_provider()
-    anthropic_api_key = settings.effective_anthropic_api_key()
+    current_settings = get_settings()
+    provider = current_settings.active_provider()
+    anthropic_api_key = current_settings.effective_anthropic_api_key()
     config = {
         "pipeline": {
             "max_outline_iterations": 1,
             "max_spec_validation_iterations": 3,
             "default_open_nodes": 5,
             "descendant_shell_count": 5,
-            "efficient_llm": settings.latex_to_lean_efficient_llm,
+            "efficient_llm": current_settings.latex_to_lean_efficient_llm,
         },
         "claude": {
             "cli_path": "claude",
@@ -192,17 +193,17 @@ def _write_runtime_config(job_id: str) -> Path:
             "provider": provider,
             "subscription": {"model": "opus"},
             "api_key": {
-                "model": settings.effective_claude_model(),
+                "model": current_settings.effective_claude_model(),
                 "key": "",
-                "base_url": settings.effective_anthropic_base_url(),
+                "base_url": current_settings.effective_anthropic_base_url(),
             },
             "bedrock": {
-                "model": settings.bedrock_model,
-                "aws_profile": settings.aws_profile,
+                "model": current_settings.bedrock_model,
+                "aws_profile": current_settings.aws_profile,
             },
         },
     }
-    cfg_path = settings.job_dir(job_id) / "runtime_config.yaml"
+    cfg_path = current_settings.job_dir(job_id) / "runtime_config.yaml"
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     with open(cfg_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, sort_keys=False)
@@ -210,25 +211,26 @@ def _write_runtime_config(job_id: str) -> Path:
 
 
 def _build_env() -> dict:
+    current_settings = get_settings()
     env = os.environ.copy()
-    anthropic_api_key = settings.effective_anthropic_api_key()
+    anthropic_api_key = current_settings.effective_anthropic_api_key()
     if anthropic_api_key:
         env["ANTHROPIC_AUTH_TOKEN"] = anthropic_api_key
         env["ANTHROPIC_API_KEY"] = anthropic_api_key
-    model = settings.effective_claude_model()
+    model = current_settings.effective_claude_model()
     env["ANTHROPIC_MODEL"] = model
     env.setdefault("ANTHROPIC_DEFAULT_SONNET_MODEL", model)
     env.setdefault("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-8")
     env.setdefault("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5")
     env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
     env["DISABLE_TELEMETRY"] = "1"
-    anthropic_base_url = settings.effective_anthropic_base_url()
+    anthropic_base_url = current_settings.effective_anthropic_base_url()
     if anthropic_base_url:
         env["ANTHROPIC_BASE_URL"] = anthropic_base_url
-    if settings.aws_profile:
-        env["AWS_PROFILE"] = settings.aws_profile
+    if current_settings.aws_profile:
+        env["AWS_PROFILE"] = current_settings.aws_profile
         env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-    if settings.latex_to_lean_dry_run:
+    if current_settings.latex_to_lean_dry_run:
         env["LATEX_TO_LEAN_DRY_RUN"] = "1"
     return env
 

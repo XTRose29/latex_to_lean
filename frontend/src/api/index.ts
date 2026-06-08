@@ -128,6 +128,7 @@ export async function cancelJob(jobId: string): Promise<JobRead> {
 
 export interface ApiSettingsRead {
   anthropic_api_key_set: boolean
+  key_source: string
   anthropic_base_url: string
   claude_model: string
   aws_profile: string

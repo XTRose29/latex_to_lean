@@ -38,6 +38,24 @@ Install Node.js on macOS if needed:
 brew install node
 ```
 
+## Claude API Key
+
+For real Claude calls, create a file named `claude_api.txt` in the repo root:
+
+```text
+claude_api.txt
+```
+
+Put only the API key in that file:
+
+```text
+sk-...
+```
+
+The file is gitignored and should not be committed. The app also supports
+setting the key from the local **API settings** page, which writes to root
+`.env`, but `claude_api.txt` is the simplest setup.
+
 Run without Claude/API calls:
 
 ```bash

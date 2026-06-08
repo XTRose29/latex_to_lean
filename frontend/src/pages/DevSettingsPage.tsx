@@ -57,9 +57,9 @@ export default function DevSettingsPage() {
     <div className="mx-auto max-w-xl px-6 py-8">
       {/* DEV banner */}
       <div className="mb-6 rounded border border-amber-700/60 bg-amber-950/40 px-4 py-3 text-xs text-amber-400">
-        <span className="font-bold">DEV-ONLY</span> — These settings write to{' '}
-        <code className="font-mono">backend/.env</code>. Remove{' '}
-        <code className="font-mono">dev_settings.py</code> and this page before sharing the app.
+        <span className="font-bold">LOCAL ONLY</span> — These settings write to{' '}
+        <code className="font-mono">.env</code> in the repo root. You can also keep using{' '}
+        <code className="font-mono">claude_api.txt</code>; both files are gitignored.
       </div>
 
       <h2 className="mb-1 text-base font-semibold">API credentials</h2>
@@ -67,6 +67,9 @@ export default function DevSettingsPage() {
         Active provider:{' '}
         <span className="text-zinc-200 font-medium">
           {PROVIDER_LABELS[data?.active_provider ?? ''] ?? data?.active_provider ?? '—'}
+        </span>
+        <span className="ml-3 text-zinc-500">
+          Key source: <span className="font-mono text-zinc-300">{data?.key_source ?? '—'}</span>
         </span>
       </p>
 
@@ -183,7 +186,7 @@ export default function DevSettingsPage() {
           >
             {mut.isPending ? 'Saving…' : 'Save to .env'}
           </button>
-          {saved && <span className="text-xs text-green-400">Saved — restart python run.py to pick up new keys.</span>}
+          {saved && <span className="text-xs text-green-400">Saved — new pipeline jobs will use these settings.</span>}
         </div>
       </form>
     </div>

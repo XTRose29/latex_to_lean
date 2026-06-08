@@ -10,11 +10,14 @@ from .config import get_settings
 
 router = APIRouter(prefix="/dev/settings", tags=["dev-settings"])
 
-ENV_PATH = Path(__file__).resolve().parent / ".env"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = REPO_ROOT / ".env"
+CLAUDE_API_PATH = REPO_ROOT / "claude_api.txt"
 
 
 class ApiSettingsRead(BaseModel):
     anthropic_api_key_set: bool
+    key_source: str
     anthropic_base_url: str
     claude_model: str
     aws_profile: str
@@ -60,6 +63,7 @@ async def read_settings():
     s = get_settings()
     return ApiSettingsRead(
         anthropic_api_key_set=bool(s.effective_anthropic_api_key()),
+        key_source=_key_source(s),
         anthropic_base_url=s.effective_anthropic_base_url(),
         claude_model=s.effective_claude_model(),
         aws_profile=s.aws_profile,
@@ -92,9 +96,18 @@ async def write_settings(
     s = get_settings()
     return ApiSettingsRead(
         anthropic_api_key_set=bool(s.effective_anthropic_api_key()),
+        key_source=_key_source(s),
         anthropic_base_url=s.effective_anthropic_base_url(),
         claude_model=s.effective_claude_model(),
         aws_profile=s.aws_profile,
         bedrock_model=s.bedrock_model,
         active_provider=s.active_provider(),
     )
+
+
+def _key_source(settings) -> str:
+    if settings.anthropic_api_key.strip():
+        return ".env"
+    if CLAUDE_API_PATH.exists() and CLAUDE_API_PATH.read_text(encoding="utf-8").strip():
+        return "claude_api.txt"
+    return "not set"
