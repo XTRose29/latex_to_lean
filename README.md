@@ -74,14 +74,6 @@ LATEX_TO_LEAN_DRY_RUN=true python3 run.py
 9. Copy the generated Lean file directly from the browser or save it as a local
    `.lean` file.
 
-Optional local examples:
-
-- `data/example_latex_input/`: sample LaTeX inputs
-- `data/example_lean_output/`: sample Lean benchmark output style
-
-`data/` is ignored by git and is intended for local samples, generated data, and
-scratch outputs.
-
 ## Current Pipeline
 
 ```text
@@ -117,15 +109,6 @@ frontend/              React/Vite web app
 pipeline/              Benchmark pipeline and deterministic helper scripts
 pipeline/benchmark_pipeline/
 prompts/               Runtime Claude prompt templates
-data/                 Local sample data and generated data (ignored by git)
-data/example_latex_input/
-data/example_lean_output/
 ```
 
 The Lean/lake project template is embedded in `pipeline/scaffold.py`.
-
-## Development Checks
-
-```bash
-python3 -m py_compile run.py backend/*.py pipeline/*.py pipeline/benchmark_pipeline/*.py
-```
