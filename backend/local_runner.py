@@ -165,7 +165,13 @@ async def _run_pipeline_job_impl(job_id: str) -> dict:
                 )
                 final_state = "error"
             elif rc == 0:
-                await _update_job(job_id, state="done", stage_label="Complete")
+                await _update_job(
+                    job_id,
+                    state="done",
+                    stage_num=pipeline_status.get("stage_total", 9) if pipeline_status else 9,
+                    stage_total=pipeline_status.get("stage_total", 9) if pipeline_status else 9,
+                    stage_label="Complete",
+                )
                 final_state = "done"
             else:
                 await _update_job(job_id, state="error", error_msg=f"Pipeline exited with code {rc}")

@@ -97,6 +97,11 @@ _DEFINITION_ENV_PATTERN = re.compile(
 # LaTeX label extractor
 _LABEL_PATTERN = re.compile(r'\\label\{([^}]+)\}')
 
+_TITLE_PATTERN = re.compile(
+    r'\\title\{((?:[^{}]|\{[^{}]*\})*)\}',
+    re.DOTALL | re.IGNORECASE,
+)
+
 _GOAL_HEADING_PATTERN = re.compile(
     r'\\(?:noindent\s*)?\\?textbf\{([^}]*(?:Goal|Problem|Claim|Theorem)[^}]*)\}',
     re.IGNORECASE,
@@ -158,6 +163,18 @@ def find_theorem_block(chapter_text: str, theorem_label: str) -> Optional[tuple[
             start_line = chapter_text[:start_char].count("\n") + 1
             end_line = chapter_text[:end_char].count("\n") + 1
             return block, start_line, end_line
+
+        title_match = _TITLE_PATTERN.search(chapter_text)
+        proof_match = _PROOF_ENV_PATTERN.search(chapter_text)
+        if title_match and proof_match:
+            title = re.sub(r"\s+", " ", title_match.group(1)).strip()
+            title = re.sub(r"^Proof\s+that\s+", "", title, flags=re.IGNORECASE).strip()
+            if title:
+                start_char = title_match.start()
+                end_char = title_match.end()
+                start_line = chapter_text[:start_char].count("\n") + 1
+                end_line = chapter_text[:end_char].count("\n") + 1
+                return title, start_line, end_line
 
     return None
 

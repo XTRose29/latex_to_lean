@@ -89,6 +89,27 @@ async def get_job_status(
     """Return the structured job_status.json written by PipelineLogger."""
     job = await _get_owned_job(job_id, db)
     status_path = Path(job.work_dir) / "job_status.json"
+    if job.state in {"done", "error"}:
+        history = []
+        if status_path.exists():
+            try:
+                history = json.loads(status_path.read_text()).get("history", [])
+            except (json.JSONDecodeError, TypeError, OSError):
+                history = []
+        return JobStatus(
+            state=job.state.upper(),
+            stage_label=job.stage_label or ("Complete" if job.state == "done" else "Error"),
+            stage_num=job.stage_num or (job.stage_total if job.state == "done" else 0),
+            stage_total=job.stage_total,
+            details=job.error_msg if job.state == "error" else "Benchmark complete.",
+            chapter=0,
+            phase="",
+            pid=0,
+            started_at=job.created_at.isoformat(),
+            updated_at=job.updated_at.isoformat(),
+            history=history,
+        )
+
     if status_path.exists():
         try:
             data = json.loads(status_path.read_text())
@@ -99,20 +120,6 @@ async def get_job_status(
         except (json.JSONDecodeError, TypeError):
             raise HTTPException(status_code=500, detail="Corrupt job_status.json")
 
-    if job.state in {"done", "error"}:
-        return JobStatus(
-            state=job.state.upper(),
-            stage_label=job.stage_label or ("Complete" if job.state == "done" else "Error"),
-            stage_num=job.stage_num,
-            stage_total=job.stage_total,
-            details=job.error_msg if job.state == "error" else "",
-            chapter=0,
-            phase="",
-            pid=0,
-            started_at=job.created_at.isoformat(),
-            updated_at=job.updated_at.isoformat(),
-            history=[],
-        )
     if not status_path.exists():
         # Job hasn't reached Stage 1 yet — return a synthetic pending status.
         return JobStatus(
@@ -351,6 +358,78 @@ async def edit_profile_again(
     return job
 
 
+@router.post("/{job_id}/rerun-from-stage/{stage_num}", response_model=JobRead)
+async def rerun_from_stage(
+    job_id: str,
+    stage_num: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear artifacts from a chosen stage onward and restart the local pipeline."""
+    from .local_runner import enqueue_pipeline_job
+
+    if stage_num < 1 or stage_num > 9:
+        raise HTTPException(status_code=400, detail="stage_num must be between 1 and 9")
+
+    job = await _get_owned_job(job_id, db)
+    if job.state in ("running", "pending"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot rerun from a previous stage while the pipeline is running.",
+        )
+
+    work_dir = Path(job.work_dir)
+    _clear_artifacts_from_stage(work_dir, stage_num)
+
+    if stage_num == 4:
+        if not (work_dir / "outline" / "skeleton.json").exists():
+            raise HTTPException(
+                status_code=409,
+                detail="The natural-language graph is not ready yet.",
+            )
+        _write_stage_status(
+            work_dir,
+            job,
+            state="PAUSED",
+            stage_num=4,
+            stage_label=_stage_label(4),
+            details="Edit the graph/profile, then confirm to resume from Stage 5.",
+            history_msg="Returned to Stage 4 graph/profile editor",
+        )
+        job.state = "paused"
+        job.stage_num = 4
+        job.stage_total = 9
+        job.stage_label = _stage_label(4)
+        job.error_msg = ""
+        await db.commit()
+        await db.refresh(job)
+        return job
+
+    if stage_num >= 5 and not (work_dir / "outline" / "assumption_profile.json").exists():
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot rerun from Stage 5 or later before an assumption profile exists.",
+        )
+
+    _write_stage_status(
+        work_dir,
+        job,
+        state="PENDING",
+        stage_num=stage_num,
+        stage_label=_stage_label(stage_num),
+        details=f"Rerunning from Stage {stage_num}.",
+        history_msg=f"Rerun requested from Stage {stage_num}",
+    )
+    await enqueue_pipeline_job(job.id)
+    job.state = "pending"
+    job.stage_num = stage_num
+    job.stage_total = 9
+    job.stage_label = _stage_label(stage_num)
+    job.error_msg = ""
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_job(
     job_id: str,
@@ -423,9 +502,94 @@ def _clear_profile_downstream_artifacts(work_dir: Path) -> None:
         shutil.rmtree(package_root, ignore_errors=True)
 
 
+def _clear_artifacts_from_stage(work_dir: Path, stage_num: int) -> None:
+    """Delete artifacts that would make the pipeline skip the requested stage."""
+    stage_files: dict[int, list[Path]] = {
+        1: [
+            work_dir / "source" / "problem_packet.json",
+        ],
+        2: [
+            work_dir / "outline" / "skeleton.json",
+        ],
+        3: [
+            work_dir / "outline" / "skeleton_mathlib_check.json",
+        ],
+        4: [
+            work_dir / "outline" / "assumption_profile.json",
+            work_dir / "outline" / "edited_graph.json",
+        ],
+        5: [
+            work_dir / "outline" / "outline.json",
+            work_dir / "outline" / "outline_lint.json",
+            work_dir / "outline" / "graph_diff.json",
+        ],
+        6: [
+            work_dir / "outline" / "mathlib_map.json",
+            work_dir / "validation" / "benchmark_target_rejection.json",
+        ],
+        7: [
+            work_dir / "blueprint" / "lean_statement_candidates.json",
+            work_dir / "blueprint" / "problem_blueprint.json",
+            work_dir / "blueprint" / "problem_blueprint.lean",
+            work_dir / "blueprint" / "problem_graph.mmd",
+        ],
+        8: [
+            work_dir / "validation" / "spec_validation_report.json",
+            work_dir / "validation" / "spec_validation_report.md",
+            work_dir / "validation" / "descendant_shells.lean",
+            work_dir / "validation" / "spec_contracts.json",
+        ],
+        9: [],
+    }
+
+    for stage in range(stage_num, 10):
+        for path in stage_files.get(stage, []):
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+
+    blueprint_dir = work_dir / "blueprint"
+    if stage_num <= 7 and blueprint_dir.exists():
+        for path in blueprint_dir.glob("*_benchmark_question.lean"):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    if stage_num <= 9:
+        package_root = work_dir.parent.parent / "benchmarks"
+        if package_root.exists():
+            shutil.rmtree(package_root, ignore_errors=True)
+
+
 def _write_profile_pause_status(work_dir: Path, job: Job) -> None:
     """Update job_status.json so polling immediately returns to Stage 4."""
+    _write_stage_status(
+        work_dir,
+        job,
+        state="PAUSED",
+        stage_num=4,
+        stage_label="4/9 Graph Editing",
+        details="Edit the graph/profile, then confirm to resume from Stage 5.",
+        history_msg="Reopened graph/profile editor",
+    )
+
+
+def _write_stage_status(
+    work_dir: Path,
+    job: Job,
+    *,
+    state: str,
+    stage_num: int,
+    stage_label: str,
+    details: str,
+    history_msg: str,
+) -> None:
+    """Write job_status.json immediately after manual stage navigation."""
     status_path = work_dir / "job_status.json"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
     history = []
     if status_path.exists():
         try:
@@ -434,17 +598,17 @@ def _write_profile_pause_status(work_dir: Path, job: Job) -> None:
             history = []
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    history.append({"time": now, "msg": "Reopened graph/profile editor"})
+    history.append({"time": now, "msg": history_msg})
     status_path.write_text(
         json.dumps(
             {
-                "state": "PAUSED",
-                "stage_label": "4/9 Graph Editing",
-                "stage_num": 4,
+                "state": state,
+                "stage_label": stage_label,
+                "stage_num": stage_num,
                 "stage_total": 9,
-                "details": "Edit the graph/profile, then confirm to resume from Stage 5.",
+                "details": details,
                 "chapter": 0,
-                "phase": "profile_edit",
+                "phase": "manual_stage_navigation",
                 "pid": 0,
                 "started_at": job.created_at.isoformat(),
                 "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -453,3 +617,18 @@ def _write_profile_pause_status(work_dir: Path, job: Job) -> None:
             indent=2,
         )
     )
+
+
+def _stage_label(stage_num: int) -> str:
+    labels = {
+        1: "1/9 Problem Packet Extraction",
+        2: "2/9 Natural-Language Graph",
+        3: "3/9 Mathlib Check",
+        4: "4/9 Graph Editing",
+        5: "5/9 Dependency Graph Construction",
+        6: "6/9 Mathlib Mapping",
+        7: "7/9 Blueprint Emission",
+        8: "8/9 Python Lean Check",
+        9: "9/9 Benchmark Packaging",
+    }
+    return labels.get(stage_num, f"{stage_num}/9 Pipeline Stage")

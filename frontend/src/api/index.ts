@@ -120,6 +120,10 @@ export async function reopenProfileEditor(jobId: string): Promise<JobRead> {
   return request(`/jobs/${jobId}/edit-profile`, { method: 'POST' })
 }
 
+export async function rerunJobFromStage(jobId: string, stageNum: number): Promise<JobRead> {
+  return request(`/jobs/${jobId}/rerun-from-stage/${stageNum}`, { method: 'POST' })
+}
+
 export async function cancelJob(jobId: string): Promise<JobRead> {
   return request(`/jobs/${jobId}`, { method: 'DELETE' })
 }

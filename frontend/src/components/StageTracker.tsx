@@ -14,9 +14,11 @@ const STAGE_LABELS = [
 
 interface Props {
   status: JobStatus
+  onRerunStage?: (stageNum: number) => void
+  disabled?: boolean
 }
 
-export default function StageTracker({ status }: Props) {
+export default function StageTracker({ status, onRerunStage, disabled = false }: Props) {
   const current = status.stage_num
   const isDone = status.state === 'DONE'
 
@@ -27,9 +29,20 @@ export default function StageTracker({ status }: Props) {
         const completed = isDone ? true : stageNum < current
         const active = stageNum === current && !isDone
         const pending = stageNum > current && !isDone
+        const canRerun = Boolean(onRerunStage) && !disabled && !pending
 
         return (
-          <div key={stageNum} className="flex items-center gap-3 px-4 py-1">
+          <button
+            key={stageNum}
+            type="button"
+            disabled={!canRerun}
+            onClick={() => canRerun && onRerunStage?.(stageNum)}
+            title={canRerun ? `Rerun from ${label}` : undefined}
+            className={[
+              'flex w-full items-center gap-3 px-4 py-1 text-left transition-colors',
+              canRerun ? 'hover:bg-zinc-900 cursor-pointer' : 'cursor-default',
+            ].join(' ')}
+          >
             <div
               className={[
                 'flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold',
@@ -62,7 +75,7 @@ export default function StageTracker({ status }: Props) {
             {active && status.state === 'PAUSED' && (
               <span className="ml-auto text-xs text-amber-400">waiting</span>
             )}
-          </div>
+          </button>
         )
       })}
     </div>

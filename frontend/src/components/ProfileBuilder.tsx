@@ -688,6 +688,8 @@ function ProfileBuilderInner({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
+  const confirmStartedRef = useRef(false)
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [showLegend, setShowLegend] = useState(false)
@@ -901,9 +903,11 @@ function ProfileBuilderInner({
 
   // ── Confirm & submit ─────────────────────────────────────────────────────
   async function handleConfirm() {
+    if (confirmStartedRef.current || submitting || confirmed) return
     const target = editedNodes.find((n) => n.role === 'target')
     if (!target) { setSubmitError('Select a target node before confirming.'); return }
 
+    confirmStartedRef.current = true
     const editedGraph: EditedGraph = {
       problem_id: problemIdRef.current,
       nodes: editedNodes,
@@ -927,9 +931,17 @@ function ProfileBuilderInner({
           throw e
         }
       }
+      setConfirmed(true)
       onConfirmed()
     } catch (e: unknown) {
-      setSubmitError(String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      if (message.includes("state 'running'") || message.includes("state 'pending'")) {
+        setConfirmed(true)
+        onConfirmed()
+      } else {
+        confirmStartedRef.current = false
+        setSubmitError(message)
+      }
     } finally {
       setSubmitting(false)
     }
@@ -1052,14 +1064,14 @@ function ProfileBuilderInner({
             </div>
             <button
               onClick={handleConfirm}
-              disabled={submitting}
+              disabled={submitting || confirmed}
               className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
             >
-              {submitting ? 'Confirming…' : 'Confirm Profile & Resume'}
+              {confirmed ? 'Resuming pipeline…' : submitting ? 'Confirming…' : 'Confirm Profile & Resume'}
             </button>
-            {submitting && (
+            {(submitting || confirmed) && (
               <p className="mt-1.5 text-center text-[10px] text-zinc-500">
-                This may take a few seconds…
+                The next stage is starting. The page will update automatically.
               </p>
             )}
           </div>

@@ -44,6 +44,10 @@ def extract_theorems_defs_and_sections(input_path: str, output_path: str) -> Non
         r'.*?(?=^\\(?:sub)*section\*?\{|\\begin\{proof\}|\Z)',
         re.DOTALL | re.IGNORECASE | re.MULTILINE,
     )
+    title_proof_pattern = re.compile(
+        r'\\title\{(?:[^{}]|\{[^{}]*\})*\}(?=.*?\\begin\{proof\})',
+        re.DOTALL | re.IGNORECASE,
+    )
 
     # Find all section headers with their positions
     section_matches = [(m.start(), m.end(), m.group(), 'section')
@@ -54,9 +58,11 @@ def extract_theorems_defs_and_sections(input_path: str, output_path: str) -> Non
                        for m in theorem_pattern.finditer(content)]
     goal_matches = [(m.start(), m.end(), m.group(), 'theorem')
                     for m in goal_pattern.finditer(content)]
+    title_matches = [(m.start(), m.end(), m.group(), 'theorem')
+                     for m in title_proof_pattern.finditer(content)]
 
     # Combine and sort by position
-    all_matches = section_matches + theorem_matches + goal_matches
+    all_matches = section_matches + theorem_matches + goal_matches + title_matches
     all_matches.sort(key=lambda x: x[0])
 
     # Extract the text from each match
@@ -70,7 +76,7 @@ def extract_theorems_defs_and_sections(input_path: str, output_path: str) -> Non
 
     print(
         f"Extracted {len(section_matches)} section headers and "
-        f"{len(theorem_matches) + len(goal_matches)} theorem/definition blocks"
+        f"{len(theorem_matches) + len(goal_matches) + len(title_matches)} theorem/definition blocks"
     )
     print(f"Output written to: {output_path}")
 

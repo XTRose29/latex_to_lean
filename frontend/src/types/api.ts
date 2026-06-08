@@ -1,14 +1,13 @@
 export interface ProjectCreate {
   name: string
   latex_content: string
-  chapter: number
+  chapter?: number
   theorem_label?: string
 }
 
 export interface ProjectRead {
   id: string
   name: string
-  chapter: number
   theorem_label?: string
   created_at: string
 }

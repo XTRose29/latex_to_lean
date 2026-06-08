@@ -10,6 +10,7 @@ import {
   getJobTokens,
   getRawArtifact,
   reopenProfileEditor,
+  rerunJobFromStage,
 } from '../api'
 import StageTracker from '../components/StageTracker'
 import ProfileBuilder from '../components/ProfileBuilder'
@@ -33,12 +34,21 @@ export default function JobPage() {
   const { jobId } = useParams<{ jobId: string }>()
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const [profileResumeStarted, setProfileResumeStarted] = useState(false)
 
   if (!jobId) return null
 
   const { data: job } = useQuery({
     queryKey: ['job', jobId],
     queryFn: () => getJob(jobId),
+    refetchInterval: (query) => {
+      const j = query.state.data
+      if (!j) return 3000
+      const jobState = j.state.toUpperCase()
+      if (TERMINAL_STATES.has(jobState)) return false
+      if (jobState === 'PAUSED') return false
+      return 3000
+    },
   })
 
   const { data: status } = useQuery({
@@ -67,14 +77,89 @@ export default function JobPage() {
     },
   })
 
-  const stateLabel = status?.state ?? job?.state.toUpperCase() ?? 'PENDING'
+  useEffect(() => {
+    if (!profileResumeStarted || !status) return
+    if (
+      status.stage_num > 4 ||
+      TERMINAL_STATES.has(status.state) ||
+      (status.state === 'PAUSED' && status.stage_num !== 4)
+    ) {
+      setProfileResumeStarted(false)
+    }
+  }, [profileResumeStarted, status])
+
+  const jobState = job?.state.toUpperCase()
+  const effectiveStatus: JobStatus | undefined =
+    jobState && TERMINAL_STATES.has(jobState)
+      ? {
+          state: jobState as JobStatus['state'],
+          stage_label: job?.stage_label || (jobState === 'DONE' ? 'Complete' : 'Pipeline error'),
+          stage_num: job?.stage_num || (jobState === 'DONE' ? 9 : status?.stage_num ?? 0),
+          stage_total: job?.stage_total || status?.stage_total || 9,
+          details:
+            jobState === 'ERROR'
+              ? job?.error_msg || status?.details || 'Pipeline error'
+              : 'Benchmark complete.',
+          chapter: status?.chapter ?? 0,
+          phase: status?.phase ?? '',
+          pid: status?.pid ?? 0,
+          started_at: status?.started_at ?? job?.created_at,
+          updated_at: job?.updated_at ?? status?.updated_at,
+          history: status?.history ?? [],
+        }
+      : profileResumeStarted && status?.state === 'PAUSED' && status.stage_num === 4
+        ? {
+          ...status,
+          state: 'PENDING',
+          stage_label: 'Starting next stage…',
+          details: 'Profile confirmed. The pipeline is resuming.',
+          updated_at: new Date().toISOString(),
+        }
+        : status
+
+  const stateLabel = effectiveStatus?.state ?? jobState ?? 'PENDING'
   const isPaused = stateLabel === 'PAUSED'
   const isDone = stateLabel === 'DONE'
   const isError = stateLabel === 'ERROR'
   const isRunning = RUNNING_STATES.has(stateLabel)
 
   // Stage 4 = profile builder (1-indexed)
-  const atProfileStage = isPaused && (status?.stage_num === 4)
+  const atProfileStage = !profileResumeStarted && isPaused && (effectiveStatus?.stage_num === 4)
+
+  async function handleRerunStage(stageNum: number) {
+    if (!jobId || isRunning) return
+    const ok = window.confirm(
+      `Rerun from Stage ${stageNum}? This clears generated artifacts from that stage onward.`,
+    )
+    if (!ok) return
+    try {
+      setProfileResumeStarted(false)
+      const nextJob = await rerunJobFromStage(jobId, stageNum)
+      const nextState = nextJob.state.toUpperCase() as JobStatus['state']
+      qc.setQueryData<JobStatus | undefined>(['job-status', jobId], (prev) => ({
+        state: nextState,
+        stage_label: nextJob.stage_label || `Stage ${stageNum}`,
+        stage_num: nextJob.stage_num || stageNum,
+        stage_total: nextJob.stage_total || prev?.stage_total || 9,
+        details:
+          stageNum === 4
+            ? 'Returned to graph/profile editing.'
+            : `Rerunning from Stage ${stageNum}.`,
+        chapter: prev?.chapter ?? 0,
+        phase: prev?.phase ?? 'manual_stage_navigation',
+        pid: prev?.pid ?? 0,
+        started_at: prev?.started_at,
+        updated_at: new Date().toISOString(),
+        history: prev?.history ?? [],
+      }))
+      await qc.invalidateQueries({ queryKey: ['job', jobId] })
+      await qc.invalidateQueries({ queryKey: ['job-status', jobId] })
+      await qc.invalidateQueries({ queryKey: ['job-log', jobId] })
+      await qc.invalidateQueries({ queryKey: ['job-tokens', jobId] })
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   return (
     <div className="flex h-full">
@@ -89,7 +174,13 @@ export default function JobPage() {
           </button>
         </div>
 
-        {status && <StageTracker status={status} />}
+        {effectiveStatus && (
+          <StageTracker
+            status={effectiveStatus}
+            disabled={isRunning}
+            onRerunStage={handleRerunStage}
+          />
+        )}
 
         {/* Token usage counter */}
         {tokens && (tokens.total_tokens > 0) && (
@@ -143,7 +234,24 @@ export default function JobPage() {
           <ProfileBuilder
             jobId={jobId}
             onConfirmed={() => {
+              setProfileResumeStarted(true)
+              qc.setQueryData<JobStatus | undefined>(['job-status', jobId], (prev) => ({
+                state: 'PENDING',
+                stage_label: 'Starting next stage…',
+                stage_num: prev?.stage_num ?? 4,
+                stage_total: prev?.stage_total ?? 9,
+                details: 'Profile confirmed. The pipeline is resuming.',
+                chapter: prev?.chapter ?? 0,
+                phase: prev?.phase ?? '',
+                pid: prev?.pid ?? 0,
+                started_at: prev?.started_at,
+                updated_at: new Date().toISOString(),
+                history: prev?.history ?? [],
+              }))
+              void qc.invalidateQueries({ queryKey: ['job', jobId] })
               void qc.invalidateQueries({ queryKey: ['job-status', jobId] })
+              void qc.invalidateQueries({ queryKey: ['job-log', jobId] })
+              void qc.invalidateQueries({ queryKey: ['job-tokens', jobId] })
             }}
           />
         ) : isPaused ? (
@@ -152,6 +260,7 @@ export default function JobPage() {
             status={status}
             onEditProfile={async () => {
               await reopenProfileEditor(jobId)
+              setProfileResumeStarted(false)
               await qc.invalidateQueries({ queryKey: ['job', jobId] })
               await qc.invalidateQueries({ queryKey: ['job-status', jobId] })
             }}
@@ -164,6 +273,7 @@ export default function JobPage() {
             jobId={jobId}
             onEditProfile={async () => {
               await reopenProfileEditor(jobId)
+              setProfileResumeStarted(false)
               await qc.invalidateQueries({ queryKey: ['job', jobId] })
               await qc.invalidateQueries({ queryKey: ['job-status', jobId] })
             }}
@@ -171,9 +281,9 @@ export default function JobPage() {
         ) : (
           <RunningPanel
             jobId={jobId}
-            status={status}
+            status={effectiveStatus}
             isRunning={isRunning}
-            startedAt={status?.started_at ?? job?.created_at}
+            startedAt={effectiveStatus?.started_at ?? job?.created_at}
           />
         )}
       </div>

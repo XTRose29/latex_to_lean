@@ -8,7 +8,6 @@ export default function NewProjectPage() {
   const qc = useQueryClient()
 
   const [name, setName] = useState('')
-  const [chapter, setChapter] = useState('1')
   const [theoremLabel, setTheoremLabel] = useState('')
   const [latex, setLatex] = useState('')
   const [selectedFileName, setSelectedFileName] = useState('')
@@ -19,7 +18,6 @@ export default function NewProjectPage() {
       const project = await createProject({
         name,
         latex_content: latex,
-        chapter: parseInt(chapter, 10),
         theorem_label: theoremLabel || undefined,
       })
       await qc.invalidateQueries({ queryKey: ['projects'] })
@@ -78,31 +76,18 @@ export default function NewProjectPage() {
           />
         </div>
 
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <label className="mb-1 block text-xs text-zinc-400">Chapter / section number</label>
-            <input
-              type="number"
-              min={1}
-              value={chapter}
-              onChange={(e) => setChapter(e.target.value)}
-              required
-              className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500"
-            />
-          </div>
-          <div className="flex-1">
-            <label className="mb-1 block text-xs text-zinc-400">
-              Theorem label{' '}
-              <span className="text-zinc-600">(optional)</span>
-            </label>
-            <input
-              type="text"
-              value={theoremLabel}
-              onChange={(e) => setTheoremLabel(e.target.value)}
-              placeholder="e.g. thm_inf_primes"
-              className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500"
-            />
-          </div>
+        <div>
+          <label className="mb-1 block text-xs text-zinc-400">
+            Theorem label{' '}
+            <span className="text-zinc-600">(optional)</span>
+          </label>
+          <input
+            type="text"
+            value={theoremLabel}
+            onChange={(e) => setTheoremLabel(e.target.value)}
+            placeholder="e.g. thm_inf_primes"
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500"
+          />
         </div>
 
         <div>

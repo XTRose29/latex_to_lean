@@ -70,9 +70,7 @@ export default function ProjectsPage() {
               <div>
                 <div className="text-sm font-medium text-zinc-100">{p.name}</div>
                 <div className="mt-0.5 text-xs text-zinc-500">
-                  ch{p.chapter}
-                  {p.theorem_label ? ` · ${p.theorem_label}` : ''}
-                  {' · '}
+                  {p.theorem_label ? `${p.theorem_label} · ` : ''}
                   {new Date(p.created_at).toLocaleDateString()}
                 </div>
               </div>
