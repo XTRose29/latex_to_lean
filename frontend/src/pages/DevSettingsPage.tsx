@@ -9,7 +9,6 @@ import type { ApiSettingsWrite } from '../api'
 
 const PROVIDER_LABELS: Record<string, string> = {
   api_key: 'Anthropic API key',
-  bedrock: 'AWS Bedrock',
   subscription: 'Claude subscription (CLI)',
 }
 
@@ -23,10 +22,9 @@ export default function DevSettingsPage() {
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
-  const [awsProfile, setAwsProfile] = useState('')
-  const [bedrockModel, setBedrockModel] = useState('')
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const endpointWarning = baseUrl.trim().startsWith('http://')
 
   const mut = useMutation({
     mutationFn: (payload: ApiSettingsWrite) => saveApiSettings(payload),
@@ -43,73 +41,104 @@ export default function DevSettingsPage() {
     e.preventDefault()
     setError(null)
     const payload: ApiSettingsWrite = {}
+    const normalizedBaseUrl = baseUrl.trim() === 'api.ai.it.cornell.edu'
+      ? 'https://api.ai.it.cornell.edu/'
+      : baseUrl.trim().startsWith('http://api.ai.it.cornell.edu')
+        ? baseUrl.trim().replace('http://', 'https://')
+        : baseUrl.trim()
     if (apiKey) payload.anthropic_api_key = apiKey
-    if (baseUrl) payload.anthropic_base_url = baseUrl
+    if (normalizedBaseUrl) payload.anthropic_base_url = normalizedBaseUrl
     if (model) payload.claude_model = model
-    if (awsProfile) payload.aws_profile = awsProfile
-    if (bedrockModel) payload.bedrock_model = bedrockModel
     mut.mutate(payload)
   }
 
-  if (isLoading) return <div className="p-8 text-zinc-400 text-sm">Loading…</div>
+  if (isLoading) return <div className="page-shell text-sm text-[var(--muted)]">Loading...</div>
 
   return (
-    <div className="mx-auto max-w-xl px-6 py-8">
+    <div className="page-shell max-w-3xl">
       {/* DEV banner */}
-      <div className="mb-6 rounded border border-amber-700/60 bg-amber-950/40 px-4 py-3 text-xs text-amber-400">
-        <span className="font-bold">LOCAL ONLY</span> — These settings write to{' '}
-        <code className="font-mono">.env</code> in the repo root. You can also keep using{' '}
-        <code className="font-mono">claude_api.txt</code>; both files are gitignored.
+      <div className="mb-6 rounded-xl border border-[#b1482f]/30 bg-[#fff2df] px-4 py-3 text-xs leading-relaxed text-[#8f2d18]">
+        <span className="font-bold">LOCAL CREDENTIALS</span> — Enter your own Claude-compatible API key and endpoint here.
+        The backend saves these settings to <code className="font-mono">.env</code> in the repo root, which is gitignored.
+        No separate local API-key file is needed.
       </div>
 
-      <h2 className="mb-1 text-base font-semibold">API credentials</h2>
-      <p className="mb-6 text-xs text-zinc-400">
-        Active provider:{' '}
-        <span className="text-zinc-200 font-medium">
-          {PROVIDER_LABELS[data?.active_provider ?? ''] ?? data?.active_provider ?? '—'}
-        </span>
-        <span className="ml-3 text-zinc-500">
-          Key source: <span className="font-mono text-zinc-300">{data?.key_source ?? '—'}</span>
-        </span>
-      </p>
+      <div className="mb-6">
+        <p className="eyebrow mb-2">Claude access</p>
+        <h2 className="text-3xl font-extrabold text-[var(--ink)]">API settings</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--muted)]">
+          The pipeline calls Claude only for natural-language proof decomposition and Lean statement synthesis.
+          Paste a personal Anthropic key, or use a compatible gateway/proxy endpoint such as your institution endpoint.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-3 text-xs text-[var(--muted)]">
+          <span>Active provider: <span className="font-semibold text-[var(--ink)]">{PROVIDER_LABELS[data?.active_provider ?? ''] ?? data?.active_provider ?? '—'}</span></span>
+          <span>Key source: <span className="font-mono text-[var(--ink)]">{data?.key_source ?? '—'}</span></span>
+        </div>
+      </div>
 
-      <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+      <form onSubmit={handleSubmit} className="app-card flex flex-col gap-6 p-6">
         {/* Anthropic API key */}
         <section>
-          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-            Anthropic API key
+          <h3 className="eyebrow mb-2">
+            Credentials
           </h3>
+          <p className="mb-4 text-sm leading-6 text-[var(--muted)]">
+            Use an Anthropic API key or a key issued by a Claude-compatible gateway. Leave a field blank to keep the current saved value.
+          </p>
           <div className="flex flex-col gap-3">
             <div>
-              <label className="mb-1 block text-xs text-zinc-400">
+              <label className="field-label">
                 API key{' '}
                 {data?.anthropic_api_key_set && (
-                  <span className="text-green-500">✓ set</span>
+                  <span className="text-[var(--accent)]">✓ currently set</span>
                 )}
               </label>
               <input
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder={data?.anthropic_api_key_set ? '(leave blank to keep current)' : 'sk-ant-…'}
-                className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500 font-mono"
+                placeholder={data?.anthropic_api_key_set ? '(leave blank to keep current key)' : 'sk-ant-... or gateway key'}
+                className="field-input font-mono"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-zinc-400">
-                Base URL{' '}
-                <span className="text-zinc-600">(Cornell proxy or custom endpoint)</span>
+              <label className="field-label">
+                API endpoint / base URL{' '}
+                <span className="text-[var(--muted)] opacity-70">(optional)</span>
               </label>
+              <div className="mb-2 flex flex-wrap gap-2">
+                {[
+                  { label: 'Anthropic default', value: 'https://api.anthropic.com' },
+                  { label: 'Cornell gateway', value: 'https://api.ai.it.cornell.edu/' },
+                ].map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setBaseUrl(opt.value)}
+                    className="rounded border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
               <input
                 type="text"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder={data?.anthropic_base_url || 'https://api.anthropic.com (default)'}
-                className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-300 outline-none focus:border-blue-500 font-mono"
+                placeholder={data?.anthropic_base_url || 'https://api.anthropic.com or https://api.ai.it.cornell.edu/'}
+                className="field-input font-mono"
               />
+              {endpointWarning && (
+                <p className="mt-1.5 text-xs font-semibold text-[#b1482f]">
+                  Use https:// for API endpoints. The Cornell gateway should be https://api.ai.it.cornell.edu/.
+                </p>
+              )}
             </div>
             <div>
-              <label className="mb-1 block text-xs text-zinc-400">Model</label>
+              <label className="field-label">Model used for Claude calls</label>
+              <p className="mb-2 text-xs leading-relaxed text-[var(--muted)]">
+                This model is used only for the two LLM stages: proof-to-graph and Lean statement synthesis.
+              </p>
               {/* Quick-select buttons */}
               <div className="flex gap-2 mb-2 flex-wrap">
                 {[
@@ -127,8 +156,8 @@ export default function DevSettingsPage() {
                       className={[
                         'rounded px-3 py-1 text-xs font-medium border transition-colors',
                         active
-                          ? 'border-blue-500 bg-blue-500/20 text-blue-300'
-                          : 'border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200',
+                          ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                          : 'border-[var(--line)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]',
                       ].join(' ')}
                     >
                       {opt.label}
@@ -140,53 +169,25 @@ export default function DevSettingsPage() {
                 type="text"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder={data?.claude_model || 'anthropic.claude-4.6-sonnet'}
-                className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-300 outline-none focus:border-blue-500 font-mono"
+                placeholder={data?.claude_model || 'claude-sonnet-4-6'}
+                className="field-input font-mono"
               />
             </div>
           </div>
         </section>
 
-        {/* AWS Bedrock */}
-        <section>
-          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-            AWS Bedrock <span className="normal-case text-zinc-600">(alternative)</span>
-          </h3>
-          <div className="flex flex-col gap-3">
-            <div>
-              <label className="mb-1 block text-xs text-zinc-400">AWS profile name</label>
-              <input
-                type="text"
-                value={awsProfile}
-                onChange={(e) => setAwsProfile(e.target.value)}
-                placeholder={data?.aws_profile || 'e.g. cornell-bedrock'}
-                className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-300 outline-none focus:border-blue-500 font-mono"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-zinc-400">Bedrock model ID</label>
-              <input
-                type="text"
-                value={bedrockModel}
-                onChange={(e) => setBedrockModel(e.target.value)}
-                placeholder={data?.bedrock_model || 'us.anthropic.claude-opus-4-6-v1[1m]'}
-                className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-300 outline-none focus:border-blue-500 font-mono"
-              />
-            </div>
-          </div>
-        </section>
 
-        {error && <p className="text-xs text-red-400">{error}</p>}
+        {error && <p className="text-xs font-semibold text-[#b1482f]">{error}</p>}
 
         <div className="flex items-center gap-4">
           <button
             type="submit"
             disabled={mut.isPending}
-            className="rounded bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
+            className="btn-primary disabled:opacity-50"
           >
-            {mut.isPending ? 'Saving…' : 'Save to .env'}
+            {mut.isPending ? 'Saving...' : 'Save API settings'}
           </button>
-          {saved && <span className="text-xs text-green-400">Saved — new pipeline jobs will use these settings.</span>}
+          {saved && <span className="text-xs font-semibold text-[var(--accent)]">Saved. New pipeline jobs will use these settings.</span>}
         </div>
       </form>
     </div>

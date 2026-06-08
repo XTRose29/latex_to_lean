@@ -14,11 +14,13 @@ const STAGE_LABELS = [
 
 interface Props {
   status: JobStatus
-  onRerunStage?: (stageNum: number) => void
-  disabled?: boolean
+  selectedStage?: number
+  onSelectStage?: (stageNum: number) => void
 }
 
-export default function StageTracker({ status, onRerunStage, disabled = false }: Props) {
+export { STAGE_LABELS }
+
+export default function StageTracker({ status, selectedStage, onSelectStage }: Props) {
   const current = status.stage_num
   const isDone = status.state === 'DONE'
 
@@ -29,28 +31,32 @@ export default function StageTracker({ status, onRerunStage, disabled = false }:
         const completed = isDone ? true : stageNum < current
         const active = stageNum === current && !isDone
         const pending = stageNum > current && !isDone
-        const canRerun = Boolean(onRerunStage) && !disabled && !pending
+        const selectable = Boolean(onSelectStage) && !pending
+        const selected = selectedStage === stageNum
 
         return (
           <button
             key={stageNum}
             type="button"
-            disabled={!canRerun}
-            onClick={() => canRerun && onRerunStage?.(stageNum)}
-            title={canRerun ? `Rerun from ${label}` : undefined}
+            disabled={!selectable}
+            onClick={() => selectable && onSelectStage?.(stageNum)}
+            title={selectable ? `View ${label}` : undefined}
             className={[
               'flex w-full items-center gap-3 px-4 py-1 text-left transition-colors',
-              canRerun ? 'hover:bg-zinc-900 cursor-pointer' : 'cursor-default',
+              selectable ? 'hover:bg-[rgba(15,94,83,0.08)] cursor-pointer' : 'cursor-default',
+              selected ? 'bg-[rgba(15,94,83,0.10)]' : '',
             ].join(' ')}
           >
             <div
               className={[
                 'flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold',
-                completed
-                  ? 'bg-green-600 text-white'
+                selected
+                  ? 'bg-[var(--ink)] text-white'
+                  : completed
+                  ? 'bg-[var(--accent)] text-white'
                   : active
-                  ? 'bg-blue-500 text-white ring-2 ring-blue-400/40'
-                  : 'bg-zinc-800 text-zinc-500',
+                  ? 'bg-[#8f2d18] text-white ring-2 ring-[#8f2d18]/25'
+                  : 'bg-[#eadfcd] text-[var(--muted)]',
               ].join(' ')}
             >
               {completed ? '✓' : stageNum}
@@ -58,22 +64,24 @@ export default function StageTracker({ status, onRerunStage, disabled = false }:
             <span
               className={[
                 'text-xs',
-                completed
-                  ? 'text-zinc-400 line-through'
+                selected
+                  ? 'text-[var(--ink)] font-extrabold'
+                  : completed
+                  ? 'text-[var(--muted)] line-through'
                   : active
-                  ? 'text-zinc-100 font-semibold'
+                  ? 'text-[var(--ink)] font-bold'
                   : pending
-                  ? 'text-zinc-600'
-                  : 'text-zinc-400',
+                  ? 'text-[var(--muted)] opacity-60'
+                  : 'text-[var(--muted)]',
               ].join(' ')}
             >
               {label}
             </span>
             {active && status.state === 'RUNNING' && (
-              <span className="ml-auto text-xs text-blue-400 animate-pulse">running</span>
+              <span className="ml-auto text-xs text-[var(--accent)] animate-pulse">running</span>
             )}
             {active && status.state === 'PAUSED' && (
-              <span className="ml-auto text-xs text-amber-400">waiting</span>
+              <span className="ml-auto text-xs text-[#8f2d18]">waiting</span>
             )}
           </button>
         )

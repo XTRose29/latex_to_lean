@@ -19,16 +19,16 @@ export interface GraphNodeData extends Record<string, unknown> {
 // ── Role colours ──────────────────────────────────────────────────────────────
 
 export const ROLE_COLORS: Record<NodeRole, string> = {
-  unset:      '#3f3f46',
-  hypothesis: '#16a34a',
-  open:       '#ef4444',
-  target:     '#3b82f6',
+  unset:      '#9a8b76',
+  hypothesis: '#0f5e53',
+  open:       '#c77a25',
+  target:     '#2f5fb3',
 }
 
 export const ROLE_LABELS: Record<NodeRole, string> = {
   unset:      'Unset',
   hypothesis: 'Hypothesis',
-  open:       'Open (to prove)',
+  open:       'Open',
   target:     'Target',
 }
 
@@ -43,17 +43,17 @@ interface CategoryStyle {
 const CATEGORY_STYLE: Record<NodeCategory, CategoryStyle> = {
   theorem: {
     borderClass: 'border-2',
-    headerBg: 'bg-zinc-800',
+    headerBg: 'bg-[#eadfcd]',
     minWidth: '180px',
   },
   definition: {
     borderClass: 'border',
-    headerBg: 'bg-zinc-900',
+    headerBg: 'bg-[#fffaf2]',
     minWidth: '160px',
   },
   hypothesis: {
     borderClass: 'border border-dashed',
-    headerBg: 'bg-zinc-900',
+    headerBg: 'bg-[#fffaf2]',
     minWidth: '160px',
   },
 }
@@ -120,7 +120,7 @@ export function GraphNode({ data, selected }: NodeProps) {
   const d = data as GraphNodeData
   const cs = CATEGORY_STYLE[d.category]
   const roleColor = ROLE_COLORS[d.role]
-  const borderColor = selected ? '#e4e4e7' : roleColor
+  const borderColor = selected ? '#1d1a16' : roleColor
 
   const noteCount = d.validation_notes?.length ?? 0
   const failCount = d.validation_notes?.filter((n) => n.status === 'fail').length ?? 0
@@ -133,10 +133,10 @@ export function GraphNode({ data, selected }: NodeProps) {
 
   return (
     <>
-      <Handle type="target" position={Position.Top} style={{ background: '#71717a' }} />
+      <Handle type="target" position={Position.Top} style={{ background: '#8f7f6a' }} />
       <div
         style={{ borderColor, minWidth: cs.minWidth }}
-        className={`rounded ${cs.borderClass} bg-zinc-900 overflow-hidden cursor-pointer max-w-[260px]`}
+        className={`rounded-xl ${cs.borderClass} bg-[var(--paper)] overflow-hidden cursor-pointer max-w-[260px] shadow-[0_10px_28px_rgba(58,40,10,0.10)]`}
       >
         {/* Header strip */}
         <div
@@ -154,24 +154,24 @@ export function GraphNode({ data, selected }: NodeProps) {
               Manual
             </span>
           )}
-          <span className="ml-auto text-[9px] text-zinc-600 font-mono truncate max-w-[100px]">{d.id}</span>
+          <span className="ml-auto text-[9px] font-mono text-[var(--muted)] opacity-70 truncate max-w-[100px]">{d.id}</span>
         </div>
 
         {/* Body */}
         <div className="px-2.5 py-2">
           {labelHtml ? (
             <div
-              className="text-xs font-semibold text-zinc-100 leading-snug break-words [&_.katex]:text-zinc-100 [&_.katex-html]:inline"
+              className="text-xs font-semibold text-[var(--ink)] leading-snug break-words [&_.katex]:text-[var(--ink)] [&_.katex-html]:inline"
               dangerouslySetInnerHTML={{ __html: labelHtml }}
             />
           ) : (
-            <div className="text-xs font-semibold text-zinc-100 leading-snug">{d.id}</div>
+            <div className="text-xs font-semibold text-[var(--ink)] leading-snug">{d.id}</div>
           )}
 
           {/* Statement preview (with KaTeX) */}
           {previewHtml && (
             <div
-              className="mt-0.5 text-[10px] text-zinc-500 leading-snug line-clamp-2 break-words [&_.katex]:text-zinc-500 [&_.katex-html]:inline"
+              className="mt-0.5 text-[10px] text-[var(--muted)] leading-snug line-clamp-2 break-words [&_.katex]:text-[var(--muted)] [&_.katex-html]:inline"
               dangerouslySetInnerHTML={{ __html: previewHtml }}
             />
           )}
@@ -190,13 +190,13 @@ export function GraphNode({ data, selected }: NodeProps) {
                 <span key={n.id} className={`inline-block h-1.5 w-1.5 rounded-full ${NOTE_DOT[n.status]}`} />
               ))}
               {failCount > 0 && (
-                <span className="text-[9px] text-red-400 ml-0.5">{failCount} issue{failCount > 1 ? 's' : ''}</span>
+                <span className="text-[9px] text-[#b1482f] ml-0.5">{failCount} issue{failCount > 1 ? 's' : ''}</span>
               )}
             </div>
           )}
         </div>
       </div>
-      <Handle type="source" position={Position.Bottom} style={{ background: '#71717a' }} />
+      <Handle type="source" position={Position.Bottom} style={{ background: '#8f7f6a' }} />
     </>
   )
 }

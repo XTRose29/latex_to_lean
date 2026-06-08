@@ -38,23 +38,19 @@ Install Node.js on macOS if needed:
 brew install node
 ```
 
-## Claude API Key
+## Claude API Setup
 
-For real Claude calls, create a file named `claude_api.txt` in the repo root:
+For real Claude calls, configure credentials from the web app:
 
-```text
-claude_api.txt
-```
+1. Start the app with `python3 run.py`.
+2. Open `http://127.0.0.1:5173`.
+3. Click **API settings** in the top-right corner.
+4. Paste your Claude-compatible API key.
+5. Optionally set a custom API endpoint/base URL, such as an institution gateway.
+6. Save the settings. New pipeline jobs will use them.
 
-Put only the API key in that file:
-
-```text
-sk-...
-```
-
-The file is gitignored and should not be committed. The app also supports
-setting the key from the local **API settings** page, which writes to root
-`.env`, but `claude_api.txt` is the simplest setup.
+The backend writes these settings to root `.env`, which is gitignored. No
+separate local API-key file is needed.
 
 Run without Claude/API calls:
 

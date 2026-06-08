@@ -18,7 +18,6 @@ export default function ProjectsPage() {
   })
 
   async function handleOpenJob(project: ProjectRead) {
-    // Find latest job or create a new one
     try {
       const jobs = await listProjectJobs(project.id)
       if (jobs.length > 0) {
@@ -37,63 +36,82 @@ export default function ProjectsPage() {
   }
 
   if (isLoading) {
-    return <div className="p-8 text-zinc-400 text-sm">Loading…</div>
+    return <div className="page-shell text-sm text-[var(--muted)]">Loading...</div>
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
-      <div className="mb-6 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Projects</h2>
-        <Link
-          to="/projects/new"
-          className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
-        >
+    <div className="page-shell">
+      <section className="mb-7 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+        <div>
+          <p className="eyebrow">Benchmark Builder</p>
+          <h1 className="app-title">LaTeX to Lean</h1>
+          <p className="mt-4 max-w-5xl text-base leading-7 text-[var(--muted)] md:text-lg">
+            Welcome. This local pipeline turns a LaTeX theorem with its proof into a Lean benchmark question: first it extracts the theorem and proof, then builds an editable natural-language dependency graph, lets you choose the benchmark target, and finally emits a Lean statement file with the proof context in comments and `by sorry`. Start by creating a project, then paste LaTeX directly or upload a local `.tex` file.
+          </p>
+        </div>
+        <Link to="/projects/new" className="btn-primary self-start">
           New project
         </Link>
-      </div>
+      </section>
 
       {projects.length === 0 ? (
-        <div className="rounded border border-zinc-800 p-8 text-center text-sm text-zinc-500">
+        <div className="app-card px-8 py-10 text-center text-sm text-[var(--muted)]">
           No projects yet.{' '}
-          <Link to="/projects/new" className="text-blue-400 hover:text-blue-300">
+          <Link to="/projects/new" className="font-semibold text-[var(--accent)] hover:text-[#8f2d18]">
             Create one
           </Link>{' '}
           to get started.
         </div>
       ) : (
-        <div className="flex flex-col gap-3">
+        <div className="grid gap-3">
           {projects.map((p) => (
-            <div
-              key={p.id}
-              className="flex items-center justify-between rounded border border-zinc-800 bg-zinc-900 px-5 py-4"
-            >
-              <div>
-                <div className="text-sm font-medium text-zinc-100">{p.name}</div>
-                <div className="mt-0.5 text-xs text-zinc-500">
+            <article key={p.id} className="app-card flex items-center justify-between gap-5 px-5 py-4">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-bold text-[var(--ink)]">{p.name}</div>
+                <div className="mt-1 text-xs text-[var(--muted)]">
                   {p.theorem_label ? `${p.theorem_label} · ` : ''}
                   {new Date(p.created_at).toLocaleDateString()}
                 </div>
               </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => handleOpenJob(p)}
-                  className="rounded bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-700"
-                >
+              <div className="flex shrink-0 items-center gap-2">
+                <button onClick={() => handleOpenJob(p)} className="btn-secondary px-4 py-1.5 text-xs">
                   Open
                 </button>
                 <button
                   onClick={() => {
                     if (confirm(`Delete "${p.name}"?`)) deleteMut.mutate(p.id)
                   }}
-                  className="text-xs text-zinc-600 hover:text-red-400"
+                  className="btn-ghost px-4 py-1.5 text-xs hover:text-[#8f2d18]"
                 >
                   Delete
                 </button>
               </div>
-            </div>
+            </article>
           ))}
         </div>
       )}
+
+      <footer className="mt-10 max-w-5xl border-t border-[rgba(99,86,70,0.16)] pt-5 text-sm leading-6 text-[var(--muted)]">
+        <p>
+          This is part of the project Autoformalization Benchmark for the Working Mathematician from{' '}
+          <a
+            href="https://danielhl.github.io/math-ai.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold text-[var(--accent)] hover:text-[#8f2d18]"
+          >
+            Cornell Math+AI Lab
+          </a>
+          .
+        </p>
+        <p className="mt-2">
+          Developed by Konrad Hartung and Tianruo Rose Xu (
+          <a href="mailto:tx88@cornell.edu" className="font-semibold text-[var(--accent)] hover:text-[#8f2d18]">
+            tx88@cornell.edu
+          </a>
+          ). Thanks to our great mentors: Professor Daniel Halpern-Leistner and Hanxi (Gary) Chen.
+        </p>
+      </footer>
     </div>
   )
 }

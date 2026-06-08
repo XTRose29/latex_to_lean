@@ -135,8 +135,6 @@ export interface ApiSettingsRead {
   key_source: string
   anthropic_base_url: string
   claude_model: string
-  aws_profile: string
-  bedrock_model: string
   active_provider: string
 }
 
@@ -144,8 +142,6 @@ export interface ApiSettingsWrite {
   anthropic_api_key?: string
   anthropic_base_url?: string
   claude_model?: string
-  aws_profile?: string
-  bedrock_model?: string
 }
 
 export async function getApiSettings(): Promise<ApiSettingsRead> {

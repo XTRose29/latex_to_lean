@@ -30,6 +30,8 @@ import type {
 } from '../types/api'
 import { nodeTypes, type GraphNodeData, ROLE_COLORS, ROLE_LABELS } from './ProfileBuilderNodes'
 
+const VISIBLE_ROLES: NodeRole[] = ['unset', 'hypothesis', 'target']
+
 // ── Math rendering ────────────────────────────────────────────────────────────
 
 function escapeHtml(s: string): string {
@@ -165,13 +167,11 @@ function skeletonToEditedEdges(steps: SkeletonStep[]): EditedEdge[] {
 
 function applyProfileRoles(nodes: EditedNode[], profile: AssumptionProfile | null): EditedNode[] {
   const selected = profile?.selected_target || profile?.profiles?.[0]?.selected_target || ''
-  const open = new Set(profile?.profiles?.[0]?.open_nodes ?? [])
   const assumed = new Set(profile?.profiles?.[0]?.assumed_nodes ?? [])
 
   return nodes.map((node) => {
-    let role: NodeRole = node.role ?? 'unset'
+    let role: NodeRole = node.role === 'open' ? 'unset' : (node.role ?? 'unset')
     if (node.id === selected) role = 'target'
-    else if (open.has(node.id)) role = 'open'
     else if (assumed.has(node.id)) role = 'hypothesis'
     return { ...node, role }
   })
@@ -186,7 +186,7 @@ function isEditedGraph(value: unknown): value is EditedGraph {
 // ── Small UI atoms ────────────────────────────────────────────────────────────
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
-  return <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">{children}</div>
+  return <div className="text-[10px] text-[var(--muted)] uppercase tracking-wider mb-1">{children}</div>
 }
 
 function TextInput({ value, onChange, placeholder, rows }: {
@@ -199,7 +199,7 @@ function TextInput({ value, onChange, placeholder, rows }: {
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       rows={rows}
-      className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-100 outline-none focus:border-blue-500 resize-y scrollbar-thin font-mono"
+      className="w-full rounded border border-[var(--line)] bg-[var(--paper-strong)] px-2 py-1.5 text-xs text-[var(--ink)] outline-none focus:border-[var(--accent)] resize-y scrollbar-thin font-mono"
     />
   )
 }
@@ -207,9 +207,9 @@ function TextInput({ value, onChange, placeholder, rows }: {
 // ── Validation note row ───────────────────────────────────────────────────────
 
 const NOTE_STATUS_COLORS: Record<NoteStatus, string> = {
-  pending: 'text-zinc-500',
+  pending: 'text-[var(--muted)]',
   pass: 'text-green-400',
-  fail: 'text-red-400',
+  fail: 'text-[#b1482f]',
 }
 
 function NoteRow({ note, onChange, onDelete }: {
@@ -219,19 +219,19 @@ function NoteRow({ note, onChange, onDelete }: {
 }) {
   const [expanded, setExpanded] = useState(false)
   return (
-    <div className="rounded border border-zinc-800 bg-zinc-950">
+    <div className="rounded-xl border border-[var(--line)] bg-[rgba(255,250,242,0.72)]">
       <div
-        className="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-zinc-900"
+        className="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-[rgba(15,94,83,0.08)]"
         onClick={() => setExpanded((v) => !v)}
       >
         <span className={`text-[10px] font-bold ${NOTE_STATUS_COLORS[note.status]}`}>
           {note.status === 'pending' ? '○' : note.status === 'pass' ? '✓' : '✗'}
         </span>
         <span className="flex-1 text-xs text-zinc-300 truncate">{note.title || 'Untitled note'}</span>
-        <span className="text-[10px] text-zinc-600">{expanded ? '▲' : '▼'}</span>
+        <span className="text-[10px] text-[var(--muted)] opacity-70">{expanded ? '▲' : '▼'}</span>
       </div>
       {expanded && (
-        <div className="border-t border-zinc-800 p-2 flex flex-col gap-2">
+        <div className="border-t border-[rgba(99,86,70,0.16)] p-2 flex flex-col gap-2">
           <TextInput value={note.title} onChange={(v) => onChange({ ...note, title: v })} placeholder="Title" />
           <TextInput value={note.description} onChange={(v) => onChange({ ...note, description: v })} placeholder="Description" rows={2} />
           <div className="flex items-center gap-2">
@@ -240,12 +240,12 @@ function NoteRow({ note, onChange, onDelete }: {
               <button
                 key={s}
                 onClick={() => onChange({ ...note, status: s })}
-                className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase ${note.status === s ? 'bg-zinc-700' : 'hover:bg-zinc-800'} ${NOTE_STATUS_COLORS[s]}`}
+                className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase ${note.status === s ? 'bg-zinc-700' : 'hover:bg-[rgba(15,94,83,0.08)]'} ${NOTE_STATUS_COLORS[s]}`}
               >
                 {s}
               </button>
             ))}
-            <button onClick={onDelete} className="ml-auto text-[10px] text-red-500 hover:text-red-400">Remove</button>
+            <button onClick={onDelete} className="ml-auto text-[10px] text-red-500 hover:text-[#b1482f]">Remove</button>
           </div>
         </div>
       )}
@@ -266,13 +266,89 @@ interface InspectorProps {
   onDelete: () => void
 }
 
+
+function NodeBrowser({
+  nodes,
+  selectedId,
+  onSelect,
+  onFocusNode,
+}: {
+  nodes: EditedNode[]
+  selectedId: string | null
+  onSelect: (id: string) => void
+  onFocusNode: (id: string) => void
+}) {
+  const selectedRef = useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [selectedId])
+
+  return (
+    <section className="shrink-0 border-b border-[rgba(99,86,70,0.16)] bg-[rgba(255,250,242,0.70)]">
+      <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <div>
+          <p className="eyebrow mb-0">Nodes</p>
+          <p className="text-[11px] text-[var(--muted)]">↑/↓ select · double-click center</p>
+        </div>
+        <span className="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[11px] font-bold text-[var(--accent)]">
+          {nodes.length}
+        </span>
+      </div>
+      <div className="max-h-36 overflow-y-auto px-2 pb-2 scrollbar-thin">
+        {nodes.map((node, index) => {
+          const selected = node.id === selectedId
+          const roleColor = ROLE_COLORS[node.role]
+          return (
+            <button
+              key={node.id}
+              ref={selected ? selectedRef : undefined}
+              type="button"
+              onClick={() => onSelect(node.id)}
+              onDoubleClick={() => onFocusNode(node.id)}
+              className={`mb-1 w-full rounded-xl border px-2.5 py-1.5 text-left transition ${
+                selected
+                  ? 'border-[var(--accent)] bg-[var(--accent-soft)] shadow-sm'
+                  : 'border-transparent hover:border-[rgba(15,94,83,0.20)] hover:bg-[rgba(15,94,83,0.06)]'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[var(--paper-strong)] text-[9px] font-extrabold text-[var(--muted)]">
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[11px] font-extrabold text-[var(--ink)]">
+                  {node.label || node.statement || node.id}
+                </span>
+                <span className="shrink-0 text-[8px] font-extrabold uppercase tracking-wide" style={{ color: roleColor }}>
+                  {ROLE_LABELS[node.role]}
+                </span>
+              </div>
+              <div className="mt-0.5 flex items-center gap-2 pl-6">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: roleColor }} />
+                <span className="min-w-0 truncate font-mono text-[9px] text-[var(--muted)]">
+                  {node.id}
+                </span>
+              </div>
+            </button>
+          )
+        })}
+        {nodes.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-[var(--line)] px-3 py-4 text-center text-xs text-[var(--muted)]">
+            No nodes loaded yet.
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function Inspector({ node, allNodeIds, activeTab, onTabChange, onChange, onDelete }: InspectorProps) {
   if (!node) {
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
         <InspectorTabs active={activeTab} onChange={onTabChange} />
         <div className="flex-1 flex items-center justify-center p-4">
-          <p className="text-xs text-zinc-600 text-center">Click a node to inspect and edit it.</p>
+          <p className="text-xs text-[var(--muted)] opacity-70 text-center">Click a node to inspect and edit it.</p>
         </div>
       </div>
     )
@@ -296,15 +372,15 @@ function InspectorTabs({ active, onChange }: { active: InspectorTab; onChange: (
     { key: 'notes', label: 'Notes' },
   ]
   return (
-    <div className="flex border-b border-zinc-800 shrink-0">
+    <div className="flex border-b border-[rgba(99,86,70,0.16)] shrink-0">
       {tabs.map((t) => (
         <button
           key={t.key}
           onClick={() => onChange(t.key)}
           className={`flex-1 py-2 text-xs font-medium transition-colors ${
             active === t.key
-              ? 'text-zinc-100 border-b-2 border-blue-500 -mb-px'
-              : 'text-zinc-500 hover:text-zinc-300'
+              ? 'text-[var(--ink)] border-b-2 border-[var(--accent)] -mb-px'
+              : 'text-[var(--muted)] hover:text-[var(--accent)]'
           }`}
         >
           {t.label}
@@ -348,7 +424,7 @@ function InspectorContent({
           <div className="flex flex-col gap-3">
             {/* ID line */}
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono text-zinc-500 truncate flex-1">{node.id}</span>
+              <span className="text-[10px] font-mono text-[var(--muted)] truncate flex-1">{node.id}</span>
               {node.is_manual && (
                 <span className="shrink-0 text-[9px] font-bold uppercase border rounded px-1.5 py-0.5" style={{ color: '#f59e0b', borderColor: '#f59e0b' }}>
                   Manual
@@ -358,7 +434,7 @@ function InspectorContent({
 
             {/* Role buttons */}
             <div className="flex flex-col gap-1.5">
-              {(['unset', 'hypothesis', 'open', 'target'] as NodeRole[]).map((r) => (
+              {VISIBLE_ROLES.map((r) => (
                 <button
                   key={r}
                   onClick={() => onChange({ ...node, role: r })}
@@ -371,18 +447,18 @@ function InspectorContent({
                   }}
                 >
                   <span style={{ color: ROLE_COLORS[r] }}>■</span>{' '}
-                  <span className={node.role === r ? 'text-zinc-100' : 'text-zinc-400'}>{ROLE_LABELS[r]}</span>
+                  <span className={node.role === r ? 'text-[var(--ink)]' : 'text-[var(--muted)]'}>{ROLE_LABELS[r]}</span>
                 </button>
               ))}
             </div>
 
             {/* Keyboard hint */}
-            <div className="mt-1 rounded bg-zinc-900 px-2.5 py-2 text-[10px] text-zinc-600 leading-relaxed">
+            <div className="mt-1 rounded-xl bg-[rgba(15,94,83,0.06)] px-2.5 py-2 text-[10px] text-[var(--muted)] leading-relaxed">
               Shortcuts when this node is selected:<br />
-              <span className="font-mono text-zinc-500">H</span> hypothesis ·{' '}
-              <span className="font-mono text-zinc-500">O</span> open ·{' '}
-              <span className="font-mono text-zinc-500">T</span> target ·{' '}
-              <span className="font-mono text-zinc-500">Esc</span> deselect
+              <span className="font-mono text-[var(--muted)]">↑/↓</span> select node ·{' '}
+              <span className="font-mono text-[var(--muted)]">H</span> hypothesis ·{' '}
+              <span className="font-mono text-[var(--muted)]">T</span> target ·{' '}
+              <span className="font-mono text-[var(--muted)]">Esc</span> deselect
             </div>
           </div>
         )}
@@ -406,7 +482,7 @@ function InspectorContent({
                     key={c}
                     onClick={() => onChange({ ...node, category: c, is_manual: true })}
                     className={`rounded px-2 py-1 text-[10px] uppercase font-bold tracking-wider transition-colors ${
-                      node.category === c ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:bg-zinc-800'
+                      node.category === c ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--muted)] hover:bg-[rgba(15,94,83,0.08)]'
                     }`}
                   >
                     {c.slice(0, 3)}
@@ -418,7 +494,7 @@ function InspectorContent({
             <div>
               <FieldLabel>Statement</FieldLabel>
               {node.statement && (
-                <div className="mb-1.5 text-[10px] text-zinc-300 bg-zinc-900 rounded p-1.5 leading-relaxed [&_.katex]:text-zinc-200">
+                <div className="mb-1.5 text-[10px] text-[var(--muted)] bg-[rgba(255,253,249,0.75)] rounded-xl p-1.5 leading-relaxed [&_.katex]:text-[var(--ink)]">
                   <MathText text={node.statement} />
                 </div>
               )}
@@ -444,7 +520,7 @@ function InspectorContent({
               <FieldLabel>Depends on</FieldLabel>
               <div className="flex flex-col gap-1 max-h-40 overflow-y-auto scrollbar-thin">
                 {otherIds.map((id) => (
-                  <label key={id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-zinc-800 px-1.5 py-1 rounded">
+                  <label key={id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-[rgba(15,94,83,0.08)] px-1.5 py-1 rounded">
                     <input
                       type="checkbox"
                       checked={depsSet.has(id)}
@@ -455,17 +531,17 @@ function InspectorContent({
                       }}
                       className="accent-blue-500"
                     />
-                    <span className="text-zinc-400 font-mono truncate">{id}</span>
+                    <span className="font-mono text-[var(--muted)] truncate">{id}</span>
                   </label>
                 ))}
-                {otherIds.length === 0 && <span className="text-xs text-zinc-600">No other nodes</span>}
+                {otherIds.length === 0 && <span className="text-xs text-[var(--muted)] opacity-70">No other nodes</span>}
               </div>
             </div>
 
-            <div className="pt-2 border-t border-zinc-800">
+            <div className="pt-2 border-t border-[rgba(99,86,70,0.16)]">
               <button
                 onClick={onDelete}
-                className="w-full rounded border border-red-900 px-3 py-1.5 text-xs text-red-400 hover:bg-red-950 transition-colors"
+                className="w-full rounded border border-red-900 px-3 py-1.5 text-xs text-[#b1482f] hover:bg-red-950 transition-colors"
               >
                 Delete node
               </button>
@@ -477,10 +553,10 @@ function InspectorContent({
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <FieldLabel>Validation notes</FieldLabel>
-              <button onClick={addNote} className="text-[10px] text-blue-400 hover:text-blue-300">+ Add</button>
+              <button onClick={addNote} className="text-[10px] font-semibold text-[var(--accent)] hover:text-[#8f2d18]">+ Add</button>
             </div>
             {node.validation_notes.length === 0 ? (
-              <p className="text-xs text-zinc-600">No notes yet. Add a note to track validation tasks for this step.</p>
+              <p className="text-xs text-[var(--muted)] opacity-70">No notes yet. Add a note to track validation tasks for this step.</p>
             ) : (
               <div className="flex flex-col gap-1.5">
                 {node.validation_notes.map((note, i) => (
@@ -514,23 +590,23 @@ function NodeContextMenu({ menu, currentRole, onSetRole, onClose }: {
       {/* invisible backdrop */}
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
-        className="fixed z-50 rounded border border-zinc-700 bg-zinc-900 shadow-xl py-1 min-w-[160px]"
+        className="fixed z-50 min-w-[160px] rounded-xl border border-[var(--line)] bg-[var(--paper)] py-1 shadow-xl"
         style={{ left: menu.x, top: menu.y }}
       >
-        <div className="px-3 py-1 text-[10px] text-zinc-600 font-mono border-b border-zinc-800 mb-1">
+        <div className="px-3 py-1 text-[10px] text-[var(--muted)] opacity-70 font-mono border-b border-[rgba(99,86,70,0.16)] mb-1">
           {menu.nodeId}
         </div>
-        {(['unset', 'hypothesis', 'open', 'target'] as NodeRole[]).map((r) => (
+        {VISIBLE_ROLES.map((r) => (
           <button
             key={r}
             onClick={() => { onSetRole(menu.nodeId, r); onClose() }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-zinc-800 transition-colors"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-[rgba(15,94,83,0.08)] transition-colors"
           >
             <span style={{ color: ROLE_COLORS[r] }}>■</span>
-            <span className={currentRole === r ? 'text-zinc-100 font-semibold' : 'text-zinc-400'}>
+            <span className={currentRole === r ? 'text-[var(--ink)] font-semibold' : 'text-[var(--muted)]'}>
               {ROLE_LABELS[r]}
             </span>
-            {currentRole === r && <span className="ml-auto text-[10px] text-zinc-600">✓</span>}
+            {currentRole === r && <span className="ml-auto text-[10px] text-[var(--muted)] opacity-70">✓</span>}
           </button>
         ))}
       </div>
@@ -543,16 +619,13 @@ function NodeContextMenu({ menu, currentRole, onSetRole, onClose }: {
 function ProgressSummary({ nodes }: { nodes: EditedNode[] }) {
   const target = nodes.filter((n) => n.role === 'target').length
   const hypotheses = nodes.filter((n) => n.role === 'hypothesis').length
-  const open = nodes.filter((n) => n.role === 'open').length
-  const unset = nodes.filter((n) => n.role === 'unset').length
+  const unset = nodes.filter((n) => n.role === 'unset' || n.role === 'open').length
 
   return (
-    <div className="border-t border-zinc-800 px-3 py-2 flex items-center gap-3 text-[10px] shrink-0">
+    <div className="border-t border-[rgba(99,86,70,0.16)] px-3 py-2 flex items-center gap-3 text-[10px] shrink-0">
       <span style={{ color: ROLE_COLORS.target }}>Target: {target}</span>
       <span className="text-zinc-700">·</span>
       <span style={{ color: ROLE_COLORS.hypothesis }}>Hyp: {hypotheses}</span>
-      <span className="text-zinc-700">·</span>
-      <span style={{ color: ROLE_COLORS.open }}>Open: {open}</span>
       {unset > 0 && (
         <>
           <span className="text-zinc-700">·</span>
@@ -567,16 +640,16 @@ function ProgressSummary({ nodes }: { nodes: EditedNode[] }) {
 
 function Legend() {
   return (
-    <div className="absolute bottom-12 left-3 z-10 rounded border border-zinc-800 bg-zinc-950/90 px-3 py-2 text-[10px] backdrop-blur flex flex-col gap-1">
-      {(['unset', 'hypothesis', 'open', 'target'] as NodeRole[]).map((r) => (
+    <div className="absolute bottom-12 left-3 z-10 rounded-xl border border-[var(--line)] bg-[rgba(255,250,242,0.9)] px-3 py-2 text-[10px] backdrop-blur flex flex-col gap-1">
+      {VISIBLE_ROLES.map((r) => (
         <div key={r} className="flex items-center gap-1.5">
           <span style={{ color: ROLE_COLORS[r] }}>■</span>
-          <span className="text-zinc-400">{ROLE_LABELS[r]}</span>
+          <span className="text-[var(--muted)]">{ROLE_LABELS[r]}</span>
         </div>
       ))}
-      <div className="border-t border-zinc-800 mt-1 pt-1 flex items-center gap-1.5">
+      <div className="border-t border-[rgba(99,86,70,0.16)] mt-1 pt-1 flex items-center gap-1.5">
         <span className="text-amber-400 border border-amber-400 rounded px-0.5" style={{ fontSize: '8px' }}>M</span>
-        <span className="text-zinc-400">Manually edited</span>
+        <span className="text-[var(--muted)]">Manually edited</span>
       </div>
     </div>
   )
@@ -593,8 +666,8 @@ function AddNodeDialog({ onAdd, onCancel }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-5 w-80 flex flex-col gap-3 shadow-xl">
-        <div className="text-sm font-semibold text-zinc-100">Add node</div>
+      <div className="flex w-80 flex-col gap-3 rounded-[20px] border border-[var(--line)] bg-[var(--paper)] p-5 shadow-xl">
+        <div className="text-sm font-extrabold text-[var(--ink)]">Add node</div>
         <div>
           <FieldLabel>Node ID</FieldLabel>
           <TextInput value={id} onChange={setId} placeholder="step_N" />
@@ -607,7 +680,7 @@ function AddNodeDialog({ onAdd, onCancel }: {
                 key={c}
                 onClick={() => setCategory(c)}
                 className={`rounded px-2 py-1 text-[10px] uppercase font-bold transition-colors ${
-                  category === c ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:bg-zinc-800'
+                  category === c ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--muted)] hover:bg-[rgba(15,94,83,0.08)]'
                 }`}
               >
                 {c.slice(0, 3)}
@@ -616,11 +689,11 @@ function AddNodeDialog({ onAdd, onCancel }: {
           </div>
         </div>
         <div className="flex gap-2 justify-end mt-1">
-          <button onClick={onCancel} className="rounded px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">Cancel</button>
+          <button onClick={onCancel} className="rounded px-3 py-1.5 text-xs text-[var(--muted)] hover:bg-[rgba(15,94,83,0.08)]">Cancel</button>
           <button
             onClick={() => id.trim() && onAdd(id.trim(), category)}
             disabled={!id.trim()}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
+            className="btn-primary px-3 py-1.5 text-xs disabled:opacity-50"
           >
             Add
           </button>
@@ -637,13 +710,13 @@ function DeleteConfirm({ nodeId, onConfirm, onCancel }: {
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-5 w-72 flex flex-col gap-3 shadow-xl">
-        <div className="text-sm font-semibold text-zinc-100">Delete node?</div>
-        <p className="text-xs text-zinc-400">
+      <div className="flex w-72 flex-col gap-3 rounded-[20px] border border-[var(--line)] bg-[var(--paper)] p-5 shadow-xl">
+        <div className="text-sm font-extrabold text-[var(--ink)]">Delete node?</div>
+        <p className="text-xs text-[var(--muted)]">
           Remove <code className="font-mono text-zinc-300">{nodeId}</code> and all its edges? This cannot be undone.
         </p>
         <div className="flex gap-2 justify-end">
-          <button onClick={onCancel} className="rounded px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800">Cancel</button>
+          <button onClick={onCancel} className="rounded px-3 py-1.5 text-xs text-[var(--muted)] hover:bg-[rgba(15,94,83,0.08)]">Cancel</button>
           <button onClick={onConfirm} className="rounded bg-red-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600">Delete</button>
         </div>
       </div>
@@ -670,7 +743,7 @@ function ProfileBuilderInner({
   submitProfileFn = submitProfile,
   resumeJobFn = resumeJob,
 }: Props) {
-  const { fitView } = useReactFlow()
+  const { fitView, getNode, setCenter } = useReactFlow()
 
   // Source-of-truth graph state
   const [editedNodes, setEditedNodes] = useState<EditedNode[]>([])
@@ -754,15 +827,19 @@ function ProfileBuilderInner({
 
   // Apply highlight styles as derived values (don't mutate state)
   const displayNodes = useMemo(() => {
-    if (!highlightedNodeIds) return rfNodes
-    return rfNodes.map((n) => ({
+    const withSelection = rfNodes.map((n) => ({
+      ...n,
+      selected: n.id === selectedId,
+    }))
+    if (!highlightedNodeIds) return withSelection
+    return withSelection.map((n) => ({
       ...n,
       style: {
         opacity: highlightedNodeIds.has(n.id) ? 1 : 0.45,
         transition: 'opacity 0.12s',
       },
     }))
-  }, [rfNodes, highlightedNodeIds])
+  }, [rfNodes, highlightedNodeIds, selectedId])
 
   const displayEdges = useMemo(() => {
     if (!highlightedNodeIds) return rfEdges
@@ -786,6 +863,22 @@ function ProfileBuilderInner({
     [editedNodes, selectedId],
   )
 
+  const selectNodeById = useCallback((id: string | null) => {
+    setSelectedId(id)
+    setContextMenu(null)
+  }, [])
+
+  const centerNodeInGraph = useCallback((id: string) => {
+    const node = getNode(id)
+    if (!node) return
+    const width = node.measured?.width ?? node.width ?? 220
+    const height = node.measured?.height ?? node.height ?? 120
+    setCenter(node.position.x + width / 2, node.position.y + height / 2, {
+      zoom: 1.25,
+      duration: 450,
+    })
+  }, [getNode, setCenter])
+
   // ── Role setter (used by keyboard shortcuts + context menu) ─────────────
   const setRoleForNode = useCallback((id: string, role: NodeRole) => {
     setEditedNodes((prev) =>
@@ -807,18 +900,32 @@ function ProfileBuilderInner({
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
-    if (!selectedId) return
     const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      const target = e.target as HTMLElement
+      const tag = target.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (editedNodes.length === 0) return
+        e.preventDefault()
+        const currentIndex = selectedId ? editedNodes.findIndex((n) => n.id === selectedId) : -1
+        const delta = e.key === 'ArrowDown' ? 1 : -1
+        const fallback = e.key === 'ArrowDown' ? 0 : editedNodes.length - 1
+        const nextIndex = currentIndex === -1
+          ? fallback
+          : (currentIndex + delta + editedNodes.length) % editedNodes.length
+        selectNodeById(editedNodes[nextIndex].id)
+        return
+      }
+
+      if (!selectedId) return
       if (e.key === 'h' || e.key === 'H') setRoleForNode(selectedId, 'hypothesis')
-      else if (e.key === 'o' || e.key === 'O') setRoleForNode(selectedId, 'open')
       else if (e.key === 't' || e.key === 'T') setRoleForNode(selectedId, 'target')
-      else if (e.key === 'Escape') { setSelectedId(null); setContextMenu(null) }
+      else if (e.key === 'Escape') selectNodeById(null)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedId, setRoleForNode])
+  }, [editedNodes, selectedId, selectNodeById, setRoleForNode])
 
   // ── Node update (from inspector) ─────────────────────────────────────────
   function updateNode(updated: EditedNode) {
@@ -920,7 +1027,7 @@ function ProfileBuilderInner({
         profile_name: 'default',
         selected_target: target.id,
         assumed_nodes: editedNodes.filter((n) => n.role === 'hypothesis').map((n) => n.id),
-        open_nodes: editedNodes.filter((n) => n.role === 'open').map((n) => n.id),
+        open_nodes: [],
         edited_graph: editedGraph,
       })
       try {
@@ -950,7 +1057,7 @@ function ProfileBuilderInner({
   // ── Render ───────────────────────────────────────────────────────────────
   if (loadError) {
     return (
-      <div className="flex h-full items-center justify-center text-red-400 text-sm">
+      <div className="flex h-full items-center justify-center text-[#b1482f] text-sm">
         Failed to load outline: {loadError}
       </div>
     )
@@ -983,13 +1090,13 @@ function ProfileBuilderInner({
           <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
             <button
               onClick={() => setShowAddDialog(true)}
-              className="rounded border border-zinc-700 bg-zinc-900/90 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 backdrop-blur transition-colors"
+              className="rounded-full border border-[rgba(99,86,70,0.22)] bg-[rgba(255,250,242,0.92)] px-3 py-1.5 text-xs font-semibold text-[var(--accent)] shadow-sm backdrop-blur transition hover:-translate-y-0.5"
             >
               + Add node
             </button>
             <button
               onClick={() => fitView({ padding: 0.1, duration: 300 })}
-              className="rounded border border-zinc-700 bg-zinc-900/90 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 backdrop-blur transition-colors"
+              className="rounded-full border border-[rgba(99,86,70,0.22)] bg-[rgba(255,250,242,0.92)] px-3 py-1.5 text-xs font-semibold text-[var(--accent)] shadow-sm backdrop-blur transition hover:-translate-y-0.5"
             >
               Fit view
             </button>
@@ -997,8 +1104,8 @@ function ProfileBuilderInner({
               onClick={() => setShowLegend((v) => !v)}
               className={`rounded border px-2.5 py-1 text-xs backdrop-blur transition-colors ${
                 showLegend
-                  ? 'border-zinc-500 bg-zinc-700/90 text-zinc-100'
-                  : 'border-zinc-700 bg-zinc-900/90 text-zinc-300 hover:bg-zinc-800'
+                  ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                  : 'border-[rgba(99,86,70,0.22)] bg-[rgba(255,250,242,0.92)] text-[var(--accent)] hover:bg-[var(--accent-soft)]'
               }`}
             >
               Legend
@@ -1014,29 +1121,36 @@ function ProfileBuilderInner({
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
-            onNodeClick={(_, node) => { setSelectedId(node.id); setContextMenu(null) }}
+            onNodeClick={(_, node) => selectNodeById(node.id)}
             onNodeContextMenu={(e, node) => {
               e.preventDefault()
-              setSelectedId(node.id)
+              selectNodeById(node.id)
               setContextMenu({ nodeId: node.id, x: e.clientX, y: e.clientY })
             }}
-            onPaneClick={() => { setSelectedId(null); setContextMenu(null) }}
+            onPaneClick={() => selectNodeById(null)}
             fitView
-            className="bg-zinc-950"
+            className="bg-[rgba(255,250,242,0.35)]"
           >
-            <Background color="#27272a" gap={20} />
-            <Controls className="[&>button]:bg-zinc-800 [&>button]:border-zinc-700 [&>button]:text-zinc-300" />
+            <Background color="#d5c6ae" gap={20} />
+            <Controls className="[&>button]:border-[var(--line)] [&>button]:bg-[var(--paper)] [&>button]:text-[var(--ink)]" />
             <MiniMap
               nodeColor={(node) => ROLE_COLORS[(node.data as GraphNodeData).role ?? 'unset']}
-              maskColor="rgba(9,9,11,0.7)"
-              style={{ background: '#18181b', border: '1px solid #27272a' }}
+              maskColor="rgba(245,241,232,0.68)"
+              style={{ background: '#fffaf2', border: '1px solid #d5c6ae' }}
             />
           </ReactFlow>
         </Panel>
 
-        <PanelResizeHandle className="w-px bg-zinc-800 hover:bg-zinc-600 transition-colors" />
+        <PanelResizeHandle className="w-px bg-[rgba(99,86,70,0.18)] transition-colors hover:bg-[var(--accent)]" />
 
-        <Panel defaultSize={30} minSize={22} className="flex flex-col overflow-hidden">
+        <Panel defaultSize={34} minSize={26} className="flex flex-col overflow-hidden">
+          <NodeBrowser
+            nodes={editedNodes}
+            selectedId={selectedId}
+            onSelect={selectNodeById}
+            onFocusNode={centerNodeInGraph}
+          />
+
           <Inspector
             node={selectedNode}
             allNodeIds={editedNodes.map((n) => n.id)}
@@ -1048,29 +1162,29 @@ function ProfileBuilderInner({
 
           <ProgressSummary nodes={editedNodes} />
 
-          <div className="shrink-0 border-t border-zinc-800 p-3">
-            {submitError && <p className="mb-2 text-xs text-red-400">{submitError}</p>}
-            <div className="mb-2 text-xs text-zinc-500">
+          <div className="shrink-0 border-t border-[rgba(99,86,70,0.16)] bg-[rgba(255,250,242,0.82)] p-3">
+            {submitError && <p className="mb-2 text-xs font-semibold text-[#b1482f]">{submitError}</p>}
+            <div className="mb-2 text-xs text-[var(--muted)]">
               Target:{' '}
               {targetNode ? (
-                <span className="text-blue-400 font-mono">{targetNode.id}</span>
+                <span className="font-mono text-[#8f2d18]">{targetNode.id}</span>
               ) : (
-                <span className="text-amber-400">none selected</span>
+                <span className="text-[#8f2d18]">none selected</span>
               )}
             </div>
-            <div className="mb-2 rounded border border-amber-500/30 bg-amber-950/30 px-2.5 py-2 text-[11px] leading-relaxed text-amber-200">
+            <div className="mb-2 rounded-xl border border-[#b1482f]/25 bg-[#fff2df] px-2.5 py-2 text-[11px] leading-relaxed text-[#8f2d18]">
               Resuming may call Claude for Lean statement synthesis of the selected benchmark nodes.
               Graph validation, diffing, Mathlib heuristics, file generation, and Lean-shape checks are Python-only.
             </div>
             <button
               onClick={handleConfirm}
               disabled={submitting || confirmed}
-              className="w-full rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
+              className="btn-primary w-full disabled:opacity-50"
             >
               {confirmed ? 'Resuming pipeline…' : submitting ? 'Confirming…' : 'Confirm Profile & Resume'}
             </button>
             {(submitting || confirmed) && (
-              <p className="mt-1.5 text-center text-[10px] text-zinc-500">
+              <p className="mt-1.5 text-center text-[10px] text-[var(--muted)]">
                 The next stage is starting. The page will update automatically.
               </p>
             )}

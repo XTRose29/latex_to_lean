@@ -1,5 +1,5 @@
 /**
- * TypeScript interfaces for all pdf_to_lean pipeline artifact schemas.
+ * TypeScript interfaces for all latex_to_lean pipeline artifact schemas.
  *
  * These types are the contract between the FastAPI backend and the React
  * frontend. Keep them in sync with the corresponding Python data structures

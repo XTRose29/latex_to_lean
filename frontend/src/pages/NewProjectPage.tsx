@@ -60,11 +60,15 @@ export default function NewProjectPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-8">
-      <h2 className="mb-6 text-lg font-semibold">New project</h2>
-      <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+    <div className="page-shell max-w-4xl">
+      <section className="mb-6">
+        <p className="eyebrow">Source Input</p>
+        <h1 className="text-3xl font-extrabold leading-tight text-[var(--ink)]">New project</h1>
+        <p className="app-copy mt-3">Paste a theorem and proof directly, or upload a local LaTeX file. The first Claude-eligible step happens only after deterministic extraction and your confirmation.</p>
+      </section>
+      <form onSubmit={handleSubmit} className="app-card flex flex-col gap-5 p-6">
         <div>
-          <label className="mb-1 block text-xs text-zinc-400">Project name</label>
+          <label className="field-label">Project name</label>
           <input
             type="text"
             value={name}
@@ -72,31 +76,31 @@ export default function NewProjectPage() {
             required
             placeholder="e.g. Infinitely many primes"
             autoFocus
-            className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500"
+            className="field-input"
           />
         </div>
 
         <div>
-          <label className="mb-1 block text-xs text-zinc-400">
+          <label className="field-label">
             Theorem label{' '}
-            <span className="text-zinc-600">(optional)</span>
+            <span className="text-[var(--muted)] opacity-70">(optional)</span>
           </label>
           <input
             type="text"
             value={theoremLabel}
             onChange={(e) => setTheoremLabel(e.target.value)}
             placeholder="e.g. thm_inf_primes"
-            className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500"
+            className="field-input"
           />
         </div>
 
         <div>
-          <label className="mb-1 block text-xs text-zinc-400">
+          <label className="field-label">
             LaTeX content{' '}
-            <span className="text-zinc-600">(theorem statement + proof)</span>
+            <span className="text-[var(--muted)] opacity-70">(theorem statement + proof)</span>
           </label>
-          <div className="mb-3 flex flex-wrap items-center gap-3 rounded border border-zinc-800 bg-zinc-950 px-3 py-2">
-            <label className="cursor-pointer rounded bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-700">
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--line)] bg-[rgba(255,253,249,0.72)] px-3 py-2">
+            <label className="btn-secondary cursor-pointer px-3 py-1.5 text-xs">
               Upload .tex/.txt
               <input
                 type="file"
@@ -105,7 +109,7 @@ export default function NewProjectPage() {
                 className="hidden"
               />
             </label>
-            <span className="text-xs text-zinc-500">
+            <span className="text-xs text-[var(--muted)]">
               {selectedFileName || 'Or paste/edit LaTeX directly below.'}
             </span>
           </div>
@@ -115,24 +119,24 @@ export default function NewProjectPage() {
             required
             rows={14}
             placeholder="\begin{theorem}&#10;  ...&#10;\end{theorem}&#10;\begin{proof}&#10;  ...&#10;\end{proof}"
-            className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-300 outline-none focus:border-blue-500 font-mono leading-relaxed resize-y scrollbar-thin"
+            className="code-surface w-full resize-y px-3 py-2 text-sm leading-relaxed outline-none scrollbar-thin focus:ring-2 focus:ring-[rgba(15,94,83,0.2)]"
           />
         </div>
 
-        {error && <p className="text-xs text-red-400">{error}</p>}
+        {error && <p className="text-xs font-semibold text-[#b1482f]">{error}</p>}
 
         <div className="flex items-center gap-4">
           <button
             type="submit"
             disabled={createMut.isPending}
-            className="rounded bg-blue-600 px-6 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
+            className="btn-primary disabled:opacity-50"
           >
             {createMut.isPending ? 'Creating…' : 'Create & start pipeline'}
           </button>
           <button
             type="button"
             onClick={() => navigate('/projects')}
-            className="text-sm text-zinc-500 hover:text-zinc-300"
+            className="btn-ghost"
           >
             Cancel
           </button>

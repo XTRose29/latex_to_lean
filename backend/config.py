@@ -66,12 +66,7 @@ class Settings(BaseSettings):
             return {}
 
     def effective_anthropic_api_key(self) -> str:
-        if self.anthropic_api_key.strip():
-            return self.anthropic_api_key.strip()
-        key_path = self.repo_root / "claude_api.txt"
-        if not key_path.exists():
-            return ""
-        return key_path.read_text(encoding="utf-8").strip()
+        return self.anthropic_api_key.strip()
 
     def effective_anthropic_base_url(self) -> str:
         if self.anthropic_base_url.strip():

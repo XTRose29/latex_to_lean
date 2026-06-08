@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .config import get_settings
@@ -12,9 +13,6 @@ router = APIRouter(prefix="/dev/settings", tags=["dev-settings"])
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = REPO_ROOT / ".env"
-CLAUDE_API_PATH = REPO_ROOT / "claude_api.txt"
-
-
 class ApiSettingsRead(BaseModel):
     anthropic_api_key_set: bool
     key_source: str
@@ -45,6 +43,25 @@ def _read_env() -> dict[str, str]:
         result[k.strip()] = v.strip()
     return result
 
+
+
+
+def _normalize_base_url(value: str) -> str:
+    url = value.strip()
+    if not url:
+        return ""
+    if url == "api.ai.it.cornell.edu":
+        return "https://api.ai.it.cornell.edu/"
+    if url.startswith("http://api.ai.it.cornell.edu"):
+        url = "https://" + url[len("http://"):]
+    if not url.startswith(("https://", "http://")):
+        url = "https://" + url
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise HTTPException(status_code=400, detail="API endpoint must use https://")
+    if parsed.netloc == "api.ai.it.cornell.edu" and not url.endswith("/"):
+        url += "/"
+    return url
 
 def _write_env(values: dict[str, str]) -> None:
     ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -80,7 +97,7 @@ async def write_settings(
     if body.anthropic_api_key != "":
         mapping["ANTHROPIC_API_KEY"] = body.anthropic_api_key
     if body.anthropic_base_url != "":
-        mapping["ANTHROPIC_BASE_URL"] = body.anthropic_base_url
+        mapping["ANTHROPIC_BASE_URL"] = _normalize_base_url(body.anthropic_base_url)
     if body.claude_model != "":
         mapping["CLAUDE_MODEL"] = body.claude_model
     if body.aws_profile != "":
@@ -108,6 +125,4 @@ async def write_settings(
 def _key_source(settings) -> str:
     if settings.anthropic_api_key.strip():
         return ".env"
-    if CLAUDE_API_PATH.exists() and CLAUDE_API_PATH.read_text(encoding="utf-8").strip():
-        return "claude_api.txt"
     return "not set"

@@ -158,7 +158,10 @@ class PipelineLogger:
         self.pid = os.getpid()
         self._history_entries: list[dict] = []
 
-        self.append_history(f"Chapter {ch} {phase} started")
+        if phase == "Outline Pipeline":
+            self.append_history("Benchmark pipeline started")
+        else:
+            self.append_history(f"Chapter {ch} {phase} started")
 
     @staticmethod
     def _iso_now() -> str:
@@ -171,7 +174,8 @@ class PipelineLogger:
             with open(self.history_file) as f:
                 history = f.read()
         with open(self.status_file, "w") as f:
-            f.write(f"# Chapter {self.ch} {self.phase} - Auto Status\n\n")
+            title = "Benchmark Pipeline" if self.phase == "Outline Pipeline" else f"Chapter {self.ch} {self.phase}"
+            f.write(f"# {title} - Auto Status\n\n")
             f.write("| Field | Value |\n|-------|-------|\n")
             f.write(f"| **Status** | {state} |\n")
             f.write(f"| **Current Iteration** | {iteration} / {max_iter} |\n")
@@ -949,8 +953,8 @@ async def _run_benchmark_mode(args) -> None:
     print(f"\n=== BENCHMARK MODE ===")
     print(f"Input dir:   {args.input}")
     print(f"Output base: {output_base}")
-    print(f"Chapter:     {args.chapter}")
-    print(f"Theorem:     {args.theorem or '(first theorem in chapter)'}")
+    print("Input:       uploaded LaTeX theorem/proof")
+    print(f"Theorem:     {args.theorem or '(first theorem-like block)'}")
     print(f"Token log:   {tracker.md_path}")
 
     ok = await run_outline_pipeline(

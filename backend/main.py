@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="pdf_to_lean API",
+    title="latex_to_lean API",
     description="Benchmark builder for mathematical formalization.",
     version="0.1.0",
     lifespan=lifespan,
