@@ -3,10 +3,10 @@
 Extract section headers, theorem blocks, and definition blocks from LaTeX files.
 
 Usage:
-    python keep_only_theorems_and_defs.py <input_file> <output_file>
+    python latex_parser.py <input_file> <output_file>
 
 Example:
-    python keep_only_theorems_and_defs.py /path/to/ch1.txt /path/to/ch1_theorems_and_defs.txt
+    python latex_parser.py /path/to/ch1.txt /path/to/ch1_theorems_and_defs.txt
 """
 
 import sys
@@ -83,8 +83,8 @@ def extract_theorems_defs_and_sections(input_path: str, output_path: str) -> Non
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: python keep_only_theorems_and_defs.py <input_file> <output_file>")
-        print("Example: python keep_only_theorems_and_defs.py ch1.txt ch1_theorems_and_defs.txt")
+        print("Usage: python latex_parser.py <input_file> <output_file>")
+        print("Example: python latex_parser.py ch1.txt ch1_theorems_and_defs.txt")
         sys.exit(1)
 
     input_path = sys.argv[1]

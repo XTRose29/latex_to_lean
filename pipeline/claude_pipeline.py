@@ -933,7 +933,7 @@ async def _run_benchmark_mode(args) -> None:
 
         # Stage 1: Extract theorem blocks (needed for packet extraction)
         theorems_dir = os.path.join(project_root, "natural_language", "raw_data", "theorems_and_defs")
-        extract_script = os.path.join(evaluation_dir, "keep_only_theorems_and_defs.py")
+        extract_script = os.path.join(evaluation_dir, "latex_parser.py")
         ch = args.chapter
         src = os.path.join(args.input, f"ch{ch}.txt")
         dst = os.path.join(theorems_dir, f"ch{ch}.txt")
@@ -1094,7 +1094,7 @@ async def main():
     print("STAGE 1: Extracting theorem and definition blocks")
     print("=" * 60)
     theorems_dir = os.path.join(project_root, "natural_language", "raw_data", "theorems_and_defs")
-    extract_script = os.path.join(evaluation_dir, "keep_only_theorems_and_defs.py")
+    extract_script = os.path.join(evaluation_dir, "latex_parser.py")
     for ch in chapters:
         src = os.path.join(args.input, f"ch{ch}.txt")
         dst = os.path.join(theorems_dir, f"ch{ch}.txt")
