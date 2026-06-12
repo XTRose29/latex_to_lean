@@ -89,4 +89,5 @@ export interface ProfileSubmit {
   assumed_nodes: string[]
   open_nodes: string[]
   edited_graph?: EditedGraph
+  graph_review_confirmed?: boolean
 }

@@ -84,7 +84,7 @@ export default function JobPage() {
     if (
       status.stage_num > 4 ||
       TERMINAL_STATES.has(status.state) ||
-      (status.state === 'PAUSED' && status.stage_num !== 4)
+      (status.state === 'PAUSED' && status.stage_num !== 4 && status.stage_num !== 5)
     ) {
       setProfileResumeStarted(false)
     }
@@ -109,7 +109,7 @@ export default function JobPage() {
           updated_at: job?.updated_at ?? status?.updated_at,
           history: status?.history ?? [],
         }
-      : profileResumeStarted && status?.state === 'PAUSED' && status.stage_num === 4
+      : profileResumeStarted && status?.state === 'PAUSED' && (status.stage_num === 4 || status.stage_num === 5)
         ? {
           ...status,
           state: 'PENDING',
@@ -125,8 +125,10 @@ export default function JobPage() {
   const isError = stateLabel === 'ERROR'
   const isRunning = RUNNING_STATES.has(stateLabel)
 
-  // Stage 4 = profile builder (1-indexed)
-  const atProfileStage = !profileResumeStarted && isPaused && (effectiveStatus?.stage_num === 4)
+  // Stage 4 = target/block selection; Stage 5 pause = dependency graph review.
+  const atProfileStage = !profileResumeStarted && isPaused && (
+    effectiveStatus?.stage_num === 4 || effectiveStatus?.stage_num === 5
+  )
 
   const currentStage = effectiveStatus?.stage_num ?? 0
   const stageForView = selectedStage ?? currentStage
@@ -342,14 +344,19 @@ type StageArtifactResult = StageArtifactSpec & {
 }
 
 const STAGE_ARTIFACTS: Record<number, StageArtifactSpec[]> = {
-  1: [{ name: 'Problem packet', artifact: 'problem_packet' }],
-  2: [{ name: 'Natural-language graph', artifact: 'skeleton' }],
+  1: [
+    { name: 'Problem packet', artifact: 'problem_packet' },
+    { name: 'Extracted LaTeX blocks', artifact: 'latex_blocks' },
+  ],
+  2: [{ name: 'Parsed block graph', artifact: 'skeleton' }],
   3: [{ name: 'Mathlib/easiness check', artifact: 'mathlib_check' }],
   4: [
-    { name: 'Edited graph', artifact: 'edited_graph' },
+    { name: 'Selected block graph', artifact: 'edited_graph' },
     { name: 'Assumption profile', artifact: 'assumption_profile' },
   ],
   5: [
+    { name: 'Hidden dependency review', artifact: 'hidden_dependencies' },
+    { name: 'Reviewed dependency graph', artifact: 'edited_graph' },
     { name: 'Dependency outline', artifact: 'outline' },
     { name: 'Graph diff', artifact: 'graph_diff' },
   ],
@@ -665,10 +672,19 @@ function runningStagePresentation(status: JobStatus | undefined): RunningStagePr
   const stage = status?.stage_num ?? 0
   if (stage === 2) {
     return {
-      eyebrow: 'Claude call 1',
-      title: 'Claude is decomposing the proof',
-      detail: 'The selected theorem and proof are being converted into a structured natural-language dependency graph.',
-      steps: ['Reading selected proof context', 'Identifying mathematical steps', 'Writing graph JSON'],
+      eyebrow: 'Python-only stage',
+      title: 'Building the parsed block graph',
+      detail: 'Python is converting extracted LaTeX blocks into graph nodes and adding ref/cref dependencies.',
+      steps: ['Loading LaTeX blocks', 'Adding parsed dependencies', 'Writing block graph JSON'],
+      callsClaude: false,
+    }
+  }
+  if (stage === 5) {
+    return {
+      eyebrow: 'Claude dependency review',
+      title: 'Finding hidden dependencies',
+      detail: 'Claude reviews the user-selected graph and parsed LaTeX blocks to suggest missing dependency edges before the graph review pause.',
+      steps: ['Reading selected blocks', 'Checking for implicit dependencies', 'Writing suggested edge JSON'],
       callsClaude: true,
     }
   }
@@ -684,9 +700,9 @@ function runningStagePresentation(status: JobStatus | undefined): RunningStagePr
   if (stage === 1) {
     return {
       eyebrow: 'Python-only stage',
-      title: 'Extracting theorem and proof',
-      detail: 'Python is parsing the LaTeX input and preparing the problem packet. No Claude call is used here.',
-      steps: ['Parsing LaTeX', 'Finding theorem/proof blocks', 'Writing problem packet'],
+      title: 'Extracting LaTeX blocks',
+      detail: 'Python is parsing the LaTeX input, attaching proof blocks, and writing the target-selection block inventory.',
+      steps: ['Strip comments', 'Extract begin/end blocks', 'Write problem packet and block inventory'],
       callsClaude: false,
     }
   }

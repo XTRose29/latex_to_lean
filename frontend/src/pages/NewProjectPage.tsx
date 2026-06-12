@@ -8,7 +8,6 @@ export default function NewProjectPage() {
   const qc = useQueryClient()
 
   const [name, setName] = useState('')
-  const [theoremLabel, setTheoremLabel] = useState('')
   const [latex, setLatex] = useState('')
   const [selectedFileName, setSelectedFileName] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -18,7 +17,6 @@ export default function NewProjectPage() {
       const project = await createProject({
         name,
         latex_content: latex,
-        theorem_label: theoremLabel || undefined,
       })
       await qc.invalidateQueries({ queryKey: ['projects'] })
       const job = await createJob(project.id)
@@ -76,20 +74,6 @@ export default function NewProjectPage() {
             required
             placeholder="e.g. Infinitely many primes"
             autoFocus
-            className="field-input"
-          />
-        </div>
-
-        <div>
-          <label className="field-label">
-            Theorem label{' '}
-            <span className="text-[var(--muted)] opacity-70">(optional)</span>
-          </label>
-          <input
-            type="text"
-            value={theoremLabel}
-            onChange={(e) => setTheoremLabel(e.target.value)}
-            placeholder="e.g. thm_inf_primes"
             className="field-input"
           />
         </div>

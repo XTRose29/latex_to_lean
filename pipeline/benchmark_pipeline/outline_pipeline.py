@@ -29,6 +29,7 @@ from benchmark_pipeline.graph_lint import lint_outline_graph
 from benchmark_pipeline.problem_packet import (
     ProblemPacket,
     SourceSpan,
+    extract_latex_blocks,
     find_local_definitions,
     find_proof_after,
     find_theorem_block,
@@ -100,21 +101,25 @@ async def run_outline_pipeline(
     # Stage 1: Problem Packet Extraction
     # -----------------------------------------------------------------
     packet_file = os.path.join(source_dir, "problem_packet.json")
+    latex_blocks_file = os.path.join(source_dir, "latex_blocks.json")
     if not _json_complete(packet_file):
         _set_benchmark_status(
             logger,
             1,
             "1/9 Problem Packet Extraction",
             "RUNNING",
-            "Extracting the target theorem and proof packet deterministically from the uploaded LaTeX input.",
+            "Parsing LaTeX blocks, comments, proof attachments, labels, refs, and the target proof packet.",
         )
         logger.log("\n=== STAGE 1: Problem Packet Extraction ===")
+        if not _json_complete(latex_blocks_file):
+            _write_latex_blocks_artifact(chapter_text_file, latex_blocks_file, logger)
         if efficient_llm:
             _write_problem_packet_deterministic(
                 chapter_text_file=chapter_text_file,
                 theorem_label=theorem_label or "",
                 ch=ch,
                 packet_file=packet_file,
+                latex_blocks_file=latex_blocks_file,
                 logger=logger,
             )
         else:
@@ -149,26 +154,35 @@ async def run_outline_pipeline(
             "Using existing problem_packet.json from a previous run.",
         )
         logger.log("Stage 1: problem_packet.json already exists. Skipping.")
+        if not _json_complete(latex_blocks_file):
+            _write_latex_blocks_artifact(chapter_text_file, latex_blocks_file, logger)
 
     # Validate problem packet has sufficient content before continuing.
-    # An empty proof_text means Stage 2 will skeletonize nothing.
+    # In block-graph mode, missing proof text is advisory; the graph can still
+    # be built from theorem/lemma/etc blocks and ref/cref edges.
     try:
         with open(packet_file) as _pf:
             _packet = json.load(_pf)
         _proof_text = _packet.get("proof_text", "").strip()
         _natural_statement = _packet.get("natural_statement", "").strip()
         if not _proof_text:
-            logger.log(
-                "ERROR: problem_packet.json has an empty 'proof_text'. "
-                "Stage 2 cannot skeletonize an empty proof. "
-                "Check that the theorem label is correct and the uploaded LaTeX contains a proof block."
-            )
-            return _stop_benchmark_pipeline(
-                logger,
-                1,
-                "1/9 Problem Packet Extraction",
-                "problem_packet.json is missing proof_text, so Stage 2 cannot continue.",
-            )
+            if efficient_llm:
+                logger.log(
+                    "WARNING: problem_packet.json has an empty 'proof_text'. "
+                    "Continuing with the parsed LaTeX block graph."
+                )
+            else:
+                logger.log(
+                    "ERROR: problem_packet.json has an empty 'proof_text'. "
+                    "Stage 2 cannot skeletonize an empty proof. "
+                    "Check that the theorem label is correct and the uploaded LaTeX contains a proof block."
+                )
+                return _stop_benchmark_pipeline(
+                    logger,
+                    1,
+                    "1/9 Problem Packet Extraction",
+                    "problem_packet.json is missing proof_text, so Stage 2 cannot continue.",
+                )
         if not _natural_statement:
             logger.log(
                 "WARNING: problem_packet.json has an empty 'natural_statement'. "
@@ -214,19 +228,28 @@ async def run_outline_pipeline(
                 f"Building a natural-language decomposition graph (attempt {reskel_attempt + 1} of {_MAX_RESKEL_ATTEMPTS}).",
             )
             logger.log(f"\n=== STAGE 2: Natural-Language Decomposition Graph (attempt {reskel_attempt + 1}) ===")
-            prompt = load_prompt(
-                prompts_dir, "claude-proof_skeletonize.md",
-                problem_id=problem_id,
-                problem_packet_file=packet_file,
-                output_file=skeleton_file,
-                project_root=project_root,
-                reskeletonize_feedback=reskeletonize_feedback,
-            )
-            await run_agent(
-                claude_opts, prompt, logger,
-                tracker=tracker, call_name=f"ch{ch} Skeletonize",
-                expected_outputs=[skeleton_file],
-            )
+            if efficient_llm:
+                _write_skeleton_from_latex_blocks(
+                    problem_id=problem_id,
+                    latex_blocks_file=latex_blocks_file,
+                    packet_file=packet_file,
+                    output_file=skeleton_file,
+                    logger=logger,
+                )
+            else:
+                prompt = load_prompt(
+                    prompts_dir, "claude-proof_skeletonize.md",
+                    problem_id=problem_id,
+                    problem_packet_file=packet_file,
+                    output_file=skeleton_file,
+                    project_root=project_root,
+                    reskeletonize_feedback=reskeletonize_feedback,
+                )
+                await run_agent(
+                    claude_opts, prompt, logger,
+                    tracker=tracker, call_name=f"ch{ch} Skeletonize",
+                    expected_outputs=[skeleton_file],
+                )
             if not _json_complete(skeleton_file):
                 logger.log("ERROR: Stage 2 did not produce skeleton.json. Stopping.")
                 return _stop_benchmark_pipeline(
@@ -392,18 +415,63 @@ async def run_outline_pipeline(
     # Stage 5: Dependency Graph Construction
     # -----------------------------------------------------------------
     outline_file = os.path.join(outline_dir, "outline.json")
+    hidden_dependencies_file = os.path.join(outline_dir, "hidden_dependencies.json")
+    graph_review_marker = os.path.join(outline_dir, "dependency_graph_review_confirmed.json")
     if not _json_complete(outline_file):
         _set_benchmark_status(
             logger,
             5,
             "5/9 Dependency Graph Construction",
             "RUNNING",
-            "Constructing the dependency graph for the selected benchmark profile.",
+            "Constructing the dependency graph from selected blocks, parsed refs, and hidden-dependency review.",
         )
         logger.log("\n=== STAGE 5: Dependency Graph Construction ===")
         if efficient_llm:
             edited_graph_file = os.path.join(outline_dir, "edited_graph.json")
             graph_diff_file = os.path.join(outline_dir, "graph_diff.json")
+            if not _json_complete(hidden_dependencies_file):
+                hidden_prompt = load_prompt(
+                    prompts_dir,
+                    "claude-hidden_dependency_graph.md",
+                    problem_id=problem_id,
+                    edited_graph_file=edited_graph_file,
+                    latex_blocks_file=latex_blocks_file,
+                    profile_file=profile_file,
+                    output_file=hidden_dependencies_file,
+                )
+                await run_agent(
+                    claude_opts,
+                    hidden_prompt,
+                    logger,
+                    tracker=tracker,
+                    call_name=f"ch{ch} Hidden Dependency Graph",
+                    expected_outputs=[hidden_dependencies_file],
+                )
+                if not _json_complete(hidden_dependencies_file):
+                    logger.log(
+                        "WARNING: hidden dependency LLM review did not produce JSON; "
+                        "falling back to parsed ref/cref dependencies only."
+                    )
+                    _write_hidden_dependency_review_fallback(
+                        edited_graph_file=edited_graph_file,
+                        output_file=hidden_dependencies_file,
+                        logger=logger,
+                    )
+            _merge_hidden_dependency_edges(
+                edited_graph_file=edited_graph_file,
+                hidden_dependencies_file=hidden_dependencies_file,
+                logger=logger,
+            )
+            if allow_ui_pause and not _json_complete(graph_review_marker):
+                _set_benchmark_status(
+                    logger,
+                    5,
+                    "5/9 Dependency Graph Review",
+                    "PAUSED",
+                    "Claude suggested hidden dependencies. Review and edit the dependency graph in the web UI.",
+                )
+                logger.append_history("Paused for dependency graph review")
+                return False
             _write_outline_from_profile(
                 problem_id=problem_id,
                 skeleton_file=skeleton_file,
@@ -445,6 +513,13 @@ async def run_outline_pipeline(
             "Using existing outline.json from a previous run.",
         )
         logger.log("Stage 5: outline.json already exists. Skipping.")
+        if not _json_complete(hidden_dependencies_file):
+            edited_graph_file = os.path.join(outline_dir, "edited_graph.json")
+            _write_hidden_dependency_review_fallback(
+                edited_graph_file=edited_graph_file,
+                output_file=hidden_dependencies_file,
+                logger=logger,
+            )
 
     # -----------------------------------------------------------------
     # Stage 5 post-check: Graph lint
@@ -1078,6 +1153,7 @@ def _write_problem_packet_deterministic(
     theorem_label: str,
     ch: int,
     packet_file: str,
+    latex_blocks_file: str,
     logger,
 ) -> None:
     """Extract one theorem/proof packet with regex/parser logic only."""
@@ -1088,20 +1164,38 @@ def _write_problem_packet_deterministic(
         logger.log(f"ERROR: cannot read uploaded LaTeX for deterministic extraction: {exc}")
         return
 
-    found = find_theorem_block(chapter_text, theorem_label)
-    if not found:
-        logger.log(f"ERROR: no theorem-like block found for label '{theorem_label or '(first theorem)'}'.")
+    blocks_artifact = extract_latex_blocks(chapter_text)
+    _write_json(latex_blocks_file, blocks_artifact)
+    blocks = blocks_artifact.get("blocks", [])
+    target_block = _select_problem_block(blocks, theorem_label)
+
+    if target_block:
+        theorem_block = target_block.get("raw", "")
+        start_line = int(target_block.get("start_line", 1))
+        end_line = int(target_block.get("end_line", start_line))
+        proof_text = target_block.get("proof", "")
+        statement = _strip_latex_environment(theorem_block)
+        label = theorem_label or (target_block.get("labels") or [target_block.get("id", "theorem")])[0]
+    else:
+        found = find_theorem_block(chapter_text, theorem_label)
+        if not found:
+            logger.log(f"ERROR: no theorem-like block found for label '{theorem_label or '(first theorem)'}'.")
+            return
+        theorem_block, start_line, end_line = found
+        proof_text = _find_proof_after_block(chapter_text, theorem_block, end_line)
+        statement = _strip_latex_environment(theorem_block)
+        label = theorem_label
+
+    if not theorem_block:
+        logger.log("ERROR: selected theorem block was empty.")
         return
 
-    theorem_block, start_line, end_line = found
-    proof_text = _find_proof_after_block(chapter_text, theorem_block, end_line)
-    statement = _strip_latex_environment(theorem_block)
-    problem_id = make_problem_id(f"ch{ch}", theorem_label or "theorem", 1)
+    problem_id = make_problem_id(f"ch{ch}", label or "theorem", 1)
     packet = ProblemPacket(
         problem_id=problem_id,
         chapter_id=f"ch{ch}",
         source_file=chapter_text_file,
-        theorem_label=theorem_label,
+        theorem_label=label,
         latex_quote=theorem_block,
         natural_statement=statement,
         proof_text=proof_text,
@@ -1113,8 +1207,157 @@ def _write_problem_packet_deterministic(
     save_problem_packet(packet, packet_file)
     logger.log(
         "Stage 1 deterministic extraction wrote problem_packet.json "
-        f"({len(packet.proof_text)} proof chars, {len(packet.local_definitions)} nearby definitions)."
+        f"and latex_blocks.json ({len(blocks)} block node(s), "
+        f"{len(packet.proof_text)} proof chars, {len(packet.local_definitions)} nearby definitions)."
     )
+
+
+def _write_latex_blocks_artifact(chapter_text_file: str, latex_blocks_file: str, logger) -> None:
+    try:
+        with open(chapter_text_file) as f:
+            chapter_text = f.read()
+    except OSError as exc:
+        logger.log(f"WARNING: could not read LaTeX source for block inventory: {exc}")
+        return
+    blocks_artifact = extract_latex_blocks(chapter_text)
+    _write_json(latex_blocks_file, blocks_artifact)
+    logger.log(f"Stage 1 wrote latex_blocks.json with {len(blocks_artifact.get('blocks', []))} block node(s).")
+
+
+def _select_problem_block(blocks: list[dict], theorem_label: str) -> dict | None:
+    visible = [b for b in blocks if b.get("show_in_picker", True)]
+    if theorem_label:
+        short = theorem_label.rsplit(":", 1)[-1]
+        for block in visible:
+            labels = block.get("labels", [])
+            if theorem_label in labels or any(short and short in label for label in labels):
+                return block
+    theorem_envs = {"theorem", "lemma", "corollary", "proposition"}
+    for block in visible:
+        if str(block.get("env", "")).lower() in theorem_envs:
+            return block
+    return visible[0] if visible else None
+
+
+def _write_skeleton_from_latex_blocks(
+    problem_id: str,
+    latex_blocks_file: str,
+    packet_file: str,
+    output_file: str,
+    logger,
+) -> None:
+    blocks_artifact = _read_json(latex_blocks_file, default={})
+    packet = _read_json(packet_file, default={})
+    steps = []
+    citation_nodes: dict[str, dict] = {}
+    for block in blocks_artifact.get("blocks", []):
+        if not block.get("show_in_picker", True):
+            continue
+        env = str(block.get("env", "theorem")).lower()
+        statement = block.get("content", "")
+        proof = block.get("proof", "")
+        refs = block.get("refs", [])
+        cites = block.get("cites", [])
+        cite_deps = []
+        for cite in cites:
+            cite_id = _citation_node_id(cite)
+            cite_deps.append(cite_id)
+            citation_nodes.setdefault(
+                cite_id,
+                {
+                    "id": cite_id,
+                    "kind": "application",
+                    "statement": f"External cited result `{cite}`.",
+                    "depends_on": [],
+                    "proof_intent": "External result introduced from a LaTeX citation.",
+                    "evidence_from_source": cite,
+                    "assumption_candidate": True,
+                    "granularity": "large",
+                    "mathlib_search_queries": _key_terms(cite),
+                    "env": "citation",
+                    "category": "hypothesis",
+                    "labels": [],
+                    "refs": [],
+                    "cites": [cite],
+                    "source_span": {"start_line": 0, "end_line": 0},
+                },
+            )
+        proof_intent = (
+            _preview_text_for_pipeline(proof, 28)
+            if proof
+            else "No attached proof block was found for this LaTeX block."
+        )
+        if cites:
+            proof_intent += f" External citations: {', '.join(cites)}."
+        steps.append(
+            {
+                "id": block.get("id", ""),
+                "kind": _skeleton_kind_for_env(env),
+                "statement": statement,
+                "depends_on": [*block.get("dependencies", []), *cite_deps],
+                "proof_intent": proof_intent,
+                "evidence_from_source": block.get("preview", ""),
+                "assumption_candidate": env in {"definition", "remark", "assumption"} or bool(cites),
+                "granularity": "medium",
+                "mathlib_search_queries": _key_terms(statement),
+                "env": env,
+                "category": _category_for_env(env),
+                "labels": block.get("labels", []),
+                "refs": refs,
+                "cites": cites,
+                "source_span": {
+                    "start_line": block.get("start_line", 0),
+                    "end_line": block.get("end_line", 0),
+                },
+            }
+        )
+    steps.extend(citation_nodes.values())
+    target = packet.get("natural_statement", "")
+    _write_json(
+        output_file,
+        {
+            "problem_id": problem_id,
+            "target_statement": target,
+            "steps": steps,
+            "implicit_steps_added": [],
+            "ambiguities": packet.get("ambiguities", []),
+            "source": "latex_blocks",
+        },
+    )
+    logger.log(
+        "Stage 2 deterministic block graph wrote skeleton.json "
+        f"with {len(steps)} selectable block node(s)."
+    )
+
+
+def _skeleton_kind_for_env(env: str) -> str:
+    if env in {"definition", "defn"}:
+        return "unpack"
+    if env in {"proof"}:
+        return "application"
+    if env in {"remark", "assumption", "hypothesis"}:
+        return "claim"
+    return "claim"
+
+
+def _category_for_env(env: str) -> str:
+    if env in {"definition", "defn"}:
+        return "definition"
+    if env in {"citation", "assumption", "hypothesis"}:
+        return "hypothesis"
+    return "theorem"
+
+
+def _citation_node_id(cite: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", cite).strip("_").lower()
+    return f"citation_{slug or 'external_result'}"
+
+
+def _preview_text_for_pipeline(text: str, limit: int = 24) -> str:
+    normalized = re.sub(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])?(?:\{([^{}]*)\})?", r"\1", text)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    words = normalized.split()
+    return " ".join(words[:limit])
 
 
 def _write_deterministic_mathlib_check(skeleton_file: str, output_file: str, logger) -> None:
@@ -1170,7 +1413,7 @@ def _write_outline_from_profile(
             source_nodes.append(
                 {
                     "id": step.get("id", step.get("name", "")),
-                    "category": "theorem",
+                    "category": step.get("category", _category_for_env(str(step.get("env", "theorem")).lower())),
                     "statement": step.get("statement", step.get("natural", "")),
                     "proof_intent": step.get("proof_intent", ""),
                     "depends_on": step.get("depends_on", step.get("inputs", [])),
@@ -1205,6 +1448,99 @@ def _write_outline_from_profile(
     outline = {"problem_id": problem_id, "main_target": selected_target, "nodes": outline_nodes}
     _write_json(output_file, outline)
     logger.log(f"Stage 5 deterministic outline wrote {len(outline_nodes)} node(s); graph diff saved to {diff_file}.")
+
+
+def _write_hidden_dependency_review_fallback(
+    edited_graph_file: str,
+    output_file: str,
+    logger,
+) -> None:
+    graph = _read_json(edited_graph_file, default={})
+    nodes = graph.get("nodes", [])
+    edges = graph.get("edges", [])
+    _write_json(
+        output_file,
+        {
+            "method": "deterministic_ref_cref_only",
+            "llm_review": "skipped",
+            "nodes_reviewed": [node.get("id", "") for node in nodes],
+            "existing_edges": [
+                {
+                    "source": edge.get("source", ""),
+                    "target": edge.get("target", ""),
+                    "is_manual": bool(edge.get("is_manual", False)),
+                }
+                for edge in edges
+            ],
+            "suggested_edges": [],
+            "notes": (
+                "The LLM hidden-dependency pass was unavailable or did not produce usable JSON. "
+                "The graph currently contains parsed ref/cref and manually selected dependencies only."
+            ),
+        },
+    )
+    logger.log(
+        "Stage 5 hidden-dependency review wrote deterministic fallback "
+        f"for {len(nodes)} node(s)."
+    )
+
+
+def _merge_hidden_dependency_edges(
+    edited_graph_file: str,
+    hidden_dependencies_file: str,
+    logger,
+) -> None:
+    graph = _read_json(edited_graph_file, default={})
+    review = _read_json(hidden_dependencies_file, default={})
+    nodes = graph.get("nodes", [])
+    edges = graph.get("edges", [])
+    node_ids = {node.get("id", "") for node in nodes}
+    edge_ids = {edge.get("id", f"{edge.get('source', '')}->{edge.get('target', '')}") for edge in edges}
+    added = 0
+
+    for suggestion in review.get("suggested_edges", []):
+        source = suggestion.get("source", "")
+        target = suggestion.get("target", "")
+        if not source or not target or source == target:
+            continue
+        if source not in node_ids or target not in node_ids:
+            continue
+        edge_id = f"{source}->{target}"
+        if edge_id in edge_ids:
+            continue
+        edges.append(
+            {
+                "id": edge_id,
+                "source": source,
+                "target": target,
+                "is_manual": True,
+                "suggested_by": "llm_hidden_dependency_review",
+                "confidence": suggestion.get("confidence", "medium"),
+                "reason": suggestion.get("reason", ""),
+            }
+        )
+        edge_ids.add(edge_id)
+        added += 1
+        for node in nodes:
+            if node.get("id") == target:
+                deps = node.setdefault("depends_on", [])
+                if source not in deps:
+                    deps.append(source)
+                notes = node.setdefault("validation_notes", [])
+                notes.append(
+                    {
+                        "id": f"hidden_dep_{source}_to_{target}",
+                        "title": f"Suggested dependency: {source}",
+                        "description": suggestion.get("reason", ""),
+                        "status": "pending",
+                    }
+                )
+                break
+
+    graph["nodes"] = nodes
+    graph["edges"] = edges
+    _write_json(edited_graph_file, graph)
+    logger.log(f"Stage 5 merged {added} hidden dependency edge suggestion(s) into edited_graph.json.")
 
 
 def _write_deterministic_mathlib_map(outline_file: str, output_file: str, logger) -> None:

@@ -1,11 +1,11 @@
 import type { JobStatus } from '../types/api'
 
 const STAGE_LABELS = [
-  'Problem packet',
-  'NL graph',
+  'LaTeX extraction',
+  'Block graph',
   'Mathlib check',
-  'Profile builder',
-  'Dependency graph',
+  'Target selection',
+  'Dependency review',
   'Mathlib map',
   'Blueprint',
   'Python Lean check',

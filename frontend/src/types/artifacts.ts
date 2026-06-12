@@ -35,6 +35,28 @@ export interface ProblemPacket {
   ambiguities: string[];
 }
 
+export interface LatexBlock {
+  id: string;
+  env: string;
+  content: string;
+  raw: string;
+  preview: string;
+  labels: string[];
+  refs: string[];
+  cites: string[];
+  dependencies: string[];
+  proof: string;
+  attached_to: string | null;
+  start_line: number;
+  end_line: number;
+  show_in_picker: boolean;
+}
+
+export interface LatexBlocks {
+  blocks: LatexBlock[];
+  shown_block_ids: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Stage 2: Proof Skeleton
 // ---------------------------------------------------------------------------

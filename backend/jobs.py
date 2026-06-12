@@ -24,10 +24,12 @@ settings = get_settings()
 # Artifact name → path relative to work_dir
 _ARTIFACT_MAP: dict[str, str] = {
     "problem_packet": "source/problem_packet.json",
+    "latex_blocks": "source/latex_blocks.json",
     "skeleton": "outline/skeleton.json",
     "mathlib_check": "outline/skeleton_mathlib_check.json",
     "assumption_profile": "outline/assumption_profile.json",
     "outline": "outline/outline.json",
+    "hidden_dependencies": "outline/hidden_dependencies.json",
     "mathlib_map": "outline/mathlib_map.json",
     "graph_diff": "outline/graph_diff.json",
     "blueprint": "blueprint/problem_blueprint.json",
@@ -276,6 +278,21 @@ async def submit_profile(
         eg_path = Path(job.work_dir) / "outline" / "edited_graph.json"
         eg_path.write_text(payload.edited_graph.model_dump_json(indent=2))
 
+    review_marker = Path(job.work_dir) / "outline" / "dependency_graph_review_confirmed.json"
+    if payload.graph_review_confirmed:
+        review_marker.write_text(
+            json.dumps(
+                {
+                    "confirmed": True,
+                    "selected_target": payload.selected_target,
+                    "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                },
+                indent=2,
+            )
+        )
+    elif review_marker.exists():
+        review_marker.unlink()
+
     # Don't change state here — leave as 'paused' so /resume accepts it.
     await db.refresh(job)
     return job
@@ -480,6 +497,8 @@ def _clear_profile_downstream_artifacts(work_dir: Path) -> None:
         work_dir / "outline" / "outline_lint.json",
         work_dir / "outline" / "mathlib_map.json",
         work_dir / "outline" / "graph_diff.json",
+        work_dir / "outline" / "hidden_dependencies.json",
+        work_dir / "outline" / "dependency_graph_review_confirmed.json",
         work_dir / "blueprint" / "lean_statement_candidates.json",
         work_dir / "blueprint" / "problem_blueprint.json",
         work_dir / "blueprint" / "problem_blueprint.lean",
@@ -507,6 +526,7 @@ def _clear_artifacts_from_stage(work_dir: Path, stage_num: int) -> None:
     stage_files: dict[int, list[Path]] = {
         1: [
             work_dir / "source" / "problem_packet.json",
+            work_dir / "source" / "latex_blocks.json",
         ],
         2: [
             work_dir / "outline" / "skeleton.json",
@@ -517,11 +537,15 @@ def _clear_artifacts_from_stage(work_dir: Path, stage_num: int) -> None:
         4: [
             work_dir / "outline" / "assumption_profile.json",
             work_dir / "outline" / "edited_graph.json",
+            work_dir / "outline" / "hidden_dependencies.json",
+            work_dir / "outline" / "dependency_graph_review_confirmed.json",
         ],
         5: [
             work_dir / "outline" / "outline.json",
             work_dir / "outline" / "outline_lint.json",
             work_dir / "outline" / "graph_diff.json",
+            work_dir / "outline" / "hidden_dependencies.json",
+            work_dir / "outline" / "dependency_graph_review_confirmed.json",
         ],
         6: [
             work_dir / "outline" / "mathlib_map.json",

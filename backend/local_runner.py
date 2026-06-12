@@ -49,6 +49,11 @@ async def _run_pipeline_job_impl(job_id: str) -> dict:
             return {"error": f"Job {job_id} not found"}
         job, project = pair
 
+    credential_error = _credential_preflight_error()
+    if credential_error:
+        await _update_job(job_id, state="error", stage_label="Credential check failed", error_msg=credential_error)
+        return {"state": "error", "job_id": job_id, "error": credential_error}
+
     await _update_job(job_id, state="running", stage_label="Starting pipeline")
 
     job_dir = settings.job_dir(job_id)
@@ -214,6 +219,19 @@ def _write_runtime_config(job_id: str) -> Path:
     with open(cfg_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, sort_keys=False)
     return cfg_path
+
+
+def _credential_preflight_error() -> str:
+    current_settings = get_settings()
+    provider = current_settings.active_provider()
+    if provider == "api_key" and not current_settings.effective_anthropic_api_key():
+        return (
+            "Anthropic API key is not configured. Add it in Dev Settings or set "
+            "ANTHROPIC_API_KEY before starting the pipeline."
+        )
+    if provider == "bedrock" and not current_settings.aws_profile:
+        return "AWS Bedrock provider is configured, but AWS_PROFILE is not set."
+    return ""
 
 
 def _build_env() -> dict:

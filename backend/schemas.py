@@ -103,3 +103,4 @@ class ProfileSubmit(BaseModel):
     assumed_nodes: list[str]
     open_nodes: list[str]
     edited_graph: EditedGraph | None = None
+    graph_review_confirmed: bool = False

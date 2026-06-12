@@ -92,6 +92,14 @@ class Settings(BaseSettings):
         )
 
     def active_provider(self) -> str:
+        configured = (
+            self.root_config()
+            .get("claude", {})
+            .get("provider", "")
+            .strip()
+        )
+        if configured in {"api_key", "bedrock", "subscription"}:
+            return configured
         if self.effective_anthropic_api_key():
             return "api_key"
         if self.aws_profile:
